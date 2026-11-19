@@ -37,7 +37,9 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
 import dotabuff
 import d2pt
 import items_img
+import opendota
 import patch
+import state as store
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -160,13 +162,17 @@ def hero_keyboard() -> InlineKeyboardMarkup:
 MENU_HOME = "🏠 Главное меню"
 MENU_PICK = "🛡 Выбрать героя"
 MENU_FIND = "✍️ Поиск героя"
+MENU_META = "📊 Мета патча"
+MENU_FAVS = "⭐ Избранное"
+MENU_MATCH = "📈 Разбор матча"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_PICK), KeyboardButton(text=MENU_FIND)],
-            [KeyboardButton(text=MENU_HOME)],
+            [KeyboardButton(text=MENU_META), KeyboardButton(text=MENU_FAVS)],
+            [KeyboardButton(text=MENU_MATCH), KeyboardButton(text=MENU_HOME)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -186,7 +192,7 @@ def hero_nav_rows(page: int, total_pages: int):
     return [nav, [InlineKeyboardButton(text="✍️ Поиск героя", callback_data="search")]]
 
 
-def hero_card_keyboard(slug: str, en: str) -> InlineKeyboardMarkup:
+def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardMarkup:
     e = en.replace(" ", "+")
     rows = [
         [
@@ -202,6 +208,11 @@ def hero_card_keyboard(slug: str, en: str) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="📖 Dotabuff Guides", callback_data=f"dbguide:{slug}"),
             InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hero:{slug}"),
+        ],
+        [
+            InlineKeyboardButton(
+                text=("🗑 Убрать из избранного" if fav else "⭐ В избранное"),
+                callback_data=f"fav:{slug}|{en}"),
         ],
         [
             InlineKeyboardButton(text="🌐 Dotabuff",
@@ -283,6 +294,67 @@ class Search(StatesGroup):
     waiting = State()
 
 
+class Match(StatesGroup):
+    waiting = State()
+
+
+def format_meta(meta: dict) -> str:
+    lines = ["📊 <b>Мета патча</b>"]
+    badge = patch.badge()
+    if badge:
+        lines.append(badge)
+    lines.append("<i>публичные матчи · OpenDota</i>")
+
+    lines.append("\n🏆 <b>Топ по винрейту</b>:")
+    for i, r in enumerate(meta["by_winrate"], 1):
+        lines.append(f"{i}. <b>{html.escape(r['hero'])}</b> — "
+                     f"{r['winrate']:.1f}% · {r['pickrate']:.1f}% пиков")
+
+    lines.append("\n🔥 <b>Топ по популярности</b>:")
+    for i, r in enumerate(meta["by_pick"], 1):
+        lines.append(f"{i}. <b>{html.escape(r['hero'])}</b> — "
+                     f"{r['pickrate']:.1f}% пиков · {r['winrate']:.1f}%")
+    return "\n".join(lines)
+
+
+MATCH_PROMPT = ("📈 Пришли номер матча — только цифры.\n"
+                "Его видно в конце ссылки: dotabuff.com/matches/<b>8123456789</b>")
+
+
+async def show_match(m: Message, digits: str) -> None:
+    """Разбор матча по номеру (цифры строкой)."""
+    wait = await m.answer("⏳ Разбираю матч...")
+    try:
+        data = await asyncio.to_thread(opendota.get_match, int(digits))
+    except Exception:  # noqa: BLE001
+        log.exception("match failed")
+        await wait.edit_text("😔 Матч не найден или OpenDota ещё не разобрал его. "
+                             "Попробуй другой ID.")
+        return
+    await wait.edit_text(format_match(data), disable_web_page_preview=True)
+
+
+def format_match(m: dict) -> str:
+    dur = f"{m['duration'] // 60}:{m['duration'] % 60:02d}"
+    winner = "🟢 Radiant" if m["radiant_win"] else "🔴 Dire"
+    lines = [f"📈 <b>Матч {m['id']}</b>",
+             f"🕒 {dur} · Победа: <b>{winner}</b>"]
+
+    for side, title in ((True, "🟢 <b>Radiant</b>"), (False, "🔴 <b>Dire</b>")):
+        players = [p for p in m["players"] if p["radiant"] == side]
+        if not players:
+            continue
+        lines.append("")
+        lines.append(title)
+        for p in players:
+            lines.append(
+                f"• {html.escape(p['hero'])} — {p['k']}/{p['d']}/{p['a']} · "
+                f"GPM {p['gpm']} · NW {p['net'] // 1000}k · ур.{p['level']}")
+    lines.append(f"\n🔗 https://www.dotabuff.com/matches/{m['id']}")
+    return "\n".join(lines)
+
+
+
 async def fetch_heroes():
     return await asyncio.to_thread(dotabuff.get_heroes)
 
@@ -293,6 +365,22 @@ async def _warm_heroes():
         await fetch_heroes()
     except Exception as e:  # noqa: BLE001
         log.warning("не удалось прогреть список героев: %s", repr(e)[:120])
+
+
+async def find_slug(en: str) -> str:
+    """Английское имя героя -> slug на dotabuff."""
+    try:
+        for h in await fetch_heroes():
+            if h["en"].lower() == (en or "").lower():
+                return h["slug"]
+    except Exception:  # noqa: BLE001
+        pass
+    return (en or "").lower().replace(" ", "-")
+
+
+def back_to_hero_kb(slug: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⬅️ Назад к герою", callback_data=f"hero:{slug}")]])
 
 
 async def send_hero_list(chat_id, page: int, bot: Bot, message: Message | None = None):
@@ -352,6 +440,7 @@ START_TEXT = (
     "\n"
     "🛡 <b>Выбрать героя</b> — портреты и статистика\n"
     "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
+    "📊 <b>Мета патча</b> · ⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b>\n"
     "🏠 <b>Главное меню</b> — этот экран\n"
     "\n"
     "<blockquote>📊 Карточка героя с dotabuff · про-билды <b>Pos 1–5</b> ·"
@@ -495,8 +584,33 @@ async def cmd_search(m: Message, state: FSMContext):
                    "например: <i>пудж</i>, <i>па</i>, <i>invoker</i>")
 
 
+@router.message(Command("meta"))
+async def cmd_meta(m: Message, state: FSMContext):
+    await state.clear()
+    await send_meta(m)
+
+
+@router.message(Command("match"))
+async def cmd_match(m: Message, state: FSMContext):
+    await state.clear()
+    digits = "".join(ch for ch in (m.text or "") if ch.isdigit())
+    if len(digits) >= 6:
+        # команда сразу с номером: /match 8123456789
+        await show_match(m, digits)
+        return
+    await state.set_state(Match.waiting)
+    await m.answer(MATCH_PROMPT)
+
+
+@router.message(Command("favs"))
+async def cmd_favs(m: Message, state: FSMContext):
+    await state.clear()
+    await send_favorites(m)
+
+
 # кнопки нижнего меню (регистрируется до поиска, чтобы работали в любом состоянии)
-@router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND}))
+@router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND,
+                            MENU_META, MENU_FAVS, MENU_MATCH}))
 async def on_menu_button(m: Message, state: FSMContext):
     await state.clear()
     if m.text == MENU_PICK:
@@ -505,8 +619,47 @@ async def on_menu_button(m: Message, state: FSMContext):
         await state.set_state(Search.waiting)
         await m.answer("✍️ Напиши имя героя (по-русски или по-английски):\n"
                        "например: <i>пудж</i>, <i>па</i>, <i>tinker</i>")
+    elif m.text == MENU_META:
+        await send_meta(m)
+    elif m.text == MENU_FAVS:
+        await send_favorites(m)
+    elif m.text == MENU_MATCH:
+        await state.set_state(Match.waiting)
+        await m.answer(MATCH_PROMPT)
     else:
         await send_start(m)
+
+
+async def send_meta(m: Message):
+    wait = await m.answer("⏳ Собираю мету патча...")
+    try:
+        meta = await asyncio.to_thread(opendota.get_meta)
+    except Exception:  # noqa: BLE001
+        log.exception("meta failed")
+        await wait.edit_text("😔 Не удалось получить мету, попробуй позже.")
+        return
+    await wait.edit_text(format_meta(meta))
+
+
+async def send_favorites(m: Message):
+    favs = store.favorites(m.chat.id)
+    try:
+        heroes = await fetch_heroes()
+    except Exception:  # noqa: BLE001
+        heroes = []
+    by_slug = {h["slug"]: h for h in heroes}
+    chosen = [by_slug[s] for s in favs if s in by_slug]
+
+    if not chosen:
+        await m.answer("⭐ <b>Избранное пусто</b>\n\n"
+                       "Открой любого героя и нажми «⭐ В избранное» — он появится здесь.")
+        return
+
+    rows = [[InlineKeyboardButton(text=h["en"], callback_data=f"hero:{h['slug']}")]
+            for h in chosen]
+    rows.append([InlineKeyboardButton(text="🧹 Очистить избранное", callback_data="favclear")])
+    await m.answer(f"⭐ <b>Избранные герои</b> · {len(chosen)}",
+                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +708,43 @@ async def on_search(m: Message, state: FSMContext):
                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
+@router.message(F.text, Match.waiting)
+async def on_match(m: Message, state: FSMContext):
+    digits = "".join(ch for ch in (m.text or "") if ch.isdigit())
+    if len(digits) < 6:
+        await m.answer("🤔 Нужен номер матча — только цифры, например <b>8123456789</b>.")
+        return
+    await state.clear()
+    await show_match(m, digits)
+
+
+@router.callback_query(F.data.startswith("fav:"))
+async def cb_fav(cq: CallbackQuery):
+    payload = cq.data.split(":", 1)[1]
+    slug, _, en = payload.partition("|")
+    en = en or slug.replace("-", " ").title()
+    added = store.toggle_favorite(cq.message.chat.id, slug)
+    await cq.answer("⭐ Добавлено в избранное" if added else "Убрано из избранного")
+    try:
+        await cq.message.edit_reply_markup(
+            reply_markup=hero_card_keyboard(slug, en, fav=added))
+    except Exception:  # noqa: BLE001
+        log.debug("edit_reply_markup failed", exc_info=True)
+
+
+@router.callback_query(F.data == "favclear")
+async def cb_favclear(cq: CallbackQuery):
+    for slug in store.favorites(cq.message.chat.id):
+        store.remove_favorite(cq.message.chat.id, slug)
+    await cq.answer("Избранное очищено")
+    try:
+        await cq.message.edit_text("⭐ <b>Избранное пусто</b>\n\n"
+                                   "Открой героя и нажми «⭐ В избранное».")
+    except Exception:  # noqa: BLE001
+        await cq.bot.send_message(cq.message.chat.id,
+                                  "⭐ <b>Избранное пусто</b>")
+
+
 @router.message(F.text)
 async def fallback_text(m: Message):
     # если пользователь просто написал имя героя без команды
@@ -588,7 +778,8 @@ async def show_hero(m_or_cq, h: dict):
             return
         en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
         await wait.edit_text(format_hero_card(data),
-                             reply_markup=hero_card_keyboard(h["slug"], en),
+                             reply_markup=hero_card_keyboard(
+                                 h["slug"], en, store.is_favorite(m_or_cq.chat.id, h["slug"])),
                              disable_web_page_preview=True)
     else:
         cq = m_or_cq
@@ -602,9 +793,10 @@ async def show_hero(m_or_cq, h: dict):
             return
         en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
         await msg.delete()
+        fav = store.is_favorite(cq.message.chat.id, h["slug"])
         try:
             await cq.message.edit_text(format_hero_card(data),
-                                       reply_markup=hero_card_keyboard(h["slug"], en),
+                                       reply_markup=hero_card_keyboard(h["slug"], en, fav),
                                        disable_web_page_preview=True)
         except Exception as e:  # noqa: BLE001
             if "not modified" in str(e):
@@ -614,7 +806,7 @@ async def show_hero(m_or_cq, h: dict):
                 # тогда просто отправляем карточку новым сообщением
                 await cq.bot.send_message(cq.message.chat.id,
                                           format_hero_card(data),
-                                          reply_markup=hero_card_keyboard(h["slug"], en),
+                                          reply_markup=hero_card_keyboard(h["slug"], en, fav),
                                           disable_web_page_preview=True)
 
 
@@ -657,20 +849,25 @@ async def cb_pos(cq: CallbackQuery):
         return
     await cq.answer()
     msg = await cq.bot.send_message(cq.message.chat.id, "⏳ Загружаю про-билд с D2PT...")
+    slug = await find_slug(en)
+    back_kb = back_to_hero_kb(slug)
     try:
         data = await asyncio.to_thread(d2pt.get_builds, en)
         text = with_patch(d2pt.format_position(data, pos))
     except Exception:  # noqa: BLE001
         log.exception("d2pt build failed")
         try:
-            await msg.edit_text("😔 D2PT недоступен. Попробуй позже или кнопку «📖 Dotabuff Guides».")
+            await msg.edit_text("😔 D2PT недоступен. Попробуй позже или кнопку «📖 Dotabuff Guides».",
+                                reply_markup=back_kb)
         except Exception:  # noqa: BLE001
             pass
         return
     try:
-        await msg.edit_text(text, disable_web_page_preview=True)
+        await msg.edit_text(text, reply_markup=back_kb,
+                            disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id, text, disable_web_page_preview=True)
+        await cq.bot.send_message(cq.message.chat.id, text, reply_markup=back_kb,
+                                  disable_web_page_preview=True)
 
     # иконки предметов компактной картинкой (старт / кор с таймингами / финал)
     if pos != "all":
@@ -697,6 +894,7 @@ async def cb_dbguide(cq: CallbackQuery):
         hero = {"en": slug.replace("-", " ").title(), "slug": slug}
         selected = guides[:3]
         await msg.edit_text(format_guides(hero, "all", selected),
+                            reply_markup=back_to_hero_kb(slug),
                             disable_web_page_preview=True)
         return
     except Exception:  # noqa: BLE001
@@ -795,6 +993,8 @@ async def main():
         return
 
     _apply_tg_dns_override()
+    # хранилище избранного (файл кешируется между запусками GitHub Actions)
+    store.init()
     # прогрев кеша списка героев в фоне
     asyncio.create_task(_warm_heroes())
     # актуальный патч Dota 2 (dota2.com/patches)
@@ -825,6 +1025,9 @@ async def main():
                 BotCommand(command="start", description="🏠 Главное меню"),
                 BotCommand(command="heroes", description="🛡 Выбрать героя"),
                 BotCommand(command="search", description="✍️ Поиск героя"),
+                BotCommand(command="meta", description="📊 Мета патча"),
+                BotCommand(command="favs", description="⭐ Избранное"),
+                BotCommand(command="match", description="📈 Разбор матча"),
             ])
         except Exception:  # noqa: BLE001
             log.warning("не удалось установить команды меню")

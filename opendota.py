@@ -7,6 +7,7 @@
 `dotabuff.get_hero_overview`, чтобы бот ничего не заметил.
 """
 import re
+import time
 from curl_cffi import requests as crequests
 
 API = "https://api.opendota.com/api"
@@ -16,6 +17,7 @@ _ATTR_RU = {"str": "Strength", "agi": "Agility", "int": "Intelligence",
 _heroes = None          # список героев из heroStats
 _items = None           # id предмета -> display name
 _by_slug = None         # slug -> строка heroStats
+_meta_cache = (0.0, None)
 
 
 def _get(path: str):
@@ -128,4 +130,79 @@ def get_hero_overview(slug: str) -> dict:
         "best_vs": best,
         "worst_vs": worst,
         "source": "opendota",
+    }
+
+
+# ----------------------------------------------------------------------------
+# Мета патча
+# ----------------------------------------------------------------------------
+def get_meta(min_picks: int = 5000, top: int = 10) -> dict:
+    """Топ героев по винрейту и по популярности (публичные матчи)."""
+    global _meta_cache
+    ts, cached = _meta_cache
+    if cached is not None and time.time() - ts < 3600:
+        return cached
+
+    heroes = _load_heroes()
+    rows = []
+    for h in heroes:
+        pick = h.get("pub_pick") or 0
+        win = h.get("pub_win") or 0
+        if pick < min_picks:
+            continue
+        rows.append({
+            "hero": h["localized_name"],
+            "pick": pick,
+            "winrate": win / pick * 100,
+        })
+    if not rows:
+        raise RuntimeError("OpenDota: нет данных по героям")
+
+    total_pick = sum(r["pick"] for r in rows) or 1
+    for r in rows:
+        r["pickrate"] = r["pick"] / total_pick * 100
+
+    data = {
+        "by_winrate": sorted(rows, key=lambda r: -r["winrate"])[:top],
+        "by_pick": sorted(rows, key=lambda r: -r["pick"])[:top],
+        "heroes": len(rows),
+    }
+    _meta_cache = (time.time(), data)
+    return data
+
+
+# ----------------------------------------------------------------------------
+# Разбор матча
+# ----------------------------------------------------------------------------
+def get_match(match_id: int) -> dict:
+    """Краткая сводка матча: результат, длительность, игроки."""
+    data = _get(f"/matches/{match_id}")
+    players = data.get("players") or []
+    if not players or not data.get("duration") or not any(p.get("hero_id") for p in players):
+        raise RuntimeError("OpenDota: матч не найден или ещё не разобран")
+
+    heroes = {h["id"]: h["localized_name"] for h in _load_heroes()}
+    rows = []
+    for p in players:
+        rows.append({
+            "hero": heroes.get(p.get("hero_id"), "?"),
+            "radiant": bool(p.get("isRadiant")),
+            "k": p.get("kills") or 0,
+            "d": p.get("deaths") or 0,
+            "a": p.get("assists") or 0,
+            "gpm": p.get("gold_per_min") or 0,
+            "xpm": p.get("xp_per_min") or 0,
+            "net": p.get("net_worth") or 0,
+            "lh": p.get("last_hits") or 0,
+            "dn": p.get("denies") or 0,
+            "level": p.get("level") or 0,
+            "dmg": p.get("hero_damage") or 0,
+        })
+    rows.sort(key=lambda r: (not r["radiant"], -r["net"]))
+    return {
+        "id": match_id,
+        "radiant_win": bool(data.get("radiant_win")),
+        "duration": data.get("duration") or 0,
+        "start": data.get("start_time") or 0,
+        "players": rows,
     }
