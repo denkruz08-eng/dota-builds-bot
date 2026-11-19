@@ -37,6 +37,7 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
 import dotabuff
 import d2pt
 import items_img
+import patch
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -347,6 +348,7 @@ async def send_hero_list(chat_id, page: int, bot: Bot, message: Message | None =
 START_TEXT = (
     "🎮 <b>DOTA 2 · СБОРКИ И МЕТА</b>\n"
     "<i>Актуальные билды для всех 127 героев</i>\n"
+    "{patch}"
     "\n"
     "🛡 <b>Выбрать героя</b> — портреты и статистика\n"
     "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
@@ -386,16 +388,27 @@ def _msk_time(ts: float) -> str:
 
 
 def start_text() -> str:
-    """Приветствие + строка таймера (если бот работает в облаке)."""
+    """Приветствие + актуальный патч + строка таймера (если бот в облаке)."""
+    badge = patch.badge()
+    text = START_TEXT.replace("{patch}", (badge + "\n") if badge else "")
     if not _TIMER_ON:
-        return START_TEXT
+        return text
     left = _RUN_SECONDS - (time.time() - _PROCESS_START)
     if left <= 0:
         line = "⏳ <b>Перезапуск бота</b> — вот-вот, подожди пару минут"
     else:
         line = (f"⏳ <b>До перезапуска бота:</b> {_left_text(left)} "
                 f"<i>(≈ {_msk_time(_PROCESS_START + _RUN_SECONDS)} МСК)</i>")
-    return f"{START_TEXT}\n\n{line}"
+    return f"{text}\n\n{line}"
+
+
+def with_patch(text: str) -> str:
+    """Вставляет строку патча сразу после заголовка сообщения."""
+    badge = patch.badge()
+    if not badge:
+        return text
+    first, sep, rest = text.partition("\n")
+    return f"{first}\n{badge}" + (f"\n{rest}" if sep else "")
 
 
 async def _countdown(bot: Bot, chat_id: int, message_id: int, photo: bool):
@@ -646,7 +659,7 @@ async def cb_pos(cq: CallbackQuery):
     msg = await cq.bot.send_message(cq.message.chat.id, "⏳ Загружаю про-билд с D2PT...")
     try:
         data = await asyncio.to_thread(d2pt.get_builds, en)
-        text = d2pt.format_position(data, pos)
+        text = with_patch(d2pt.format_position(data, pos))
     except Exception:  # noqa: BLE001
         log.exception("d2pt build failed")
         try:
@@ -700,7 +713,7 @@ async def cb_dbguide(cq: CallbackQuery):
         text = ("📖 <b>Гайды dotabuff недоступны с этого сервера</b>\n"
                 "Показываю про-билды с dota2protracker:\n\n"
                 + d2pt.format_position(data, "all"))
-        await msg.edit_text(text, disable_web_page_preview=True)
+        await msg.edit_text(with_patch(text), disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
         log.exception("d2pt fallback failed")
         await msg.edit_text("😔 Не удалось загрузить гайды, попробуй позже.")
@@ -756,12 +769,23 @@ def _log_sources_status():
     checks = (
         ("dotabuff /heroes", lambda: f"{len(dotabuff.get_heroes())} героев"),
         ("dota2protracker", lambda: sorted(d2pt.get_builds("Tinker")["positions"])),
+        ("патч dota2.com", lambda: patch.refresh(True)["number"]),
     )
     for name, fn in checks:
         try:
             log.info("источник %-18s OK: %s", name, fn())
         except Exception as e:  # noqa: BLE001
             log.warning("источник %-18s НЕДОСТУПЕН: %s", name, repr(e)[:120])
+
+
+async def _patch_watch():
+    """Следит за актуальным патчем: обновляет раз в 3 часа в фоне."""
+    while True:
+        try:
+            await asyncio.to_thread(patch.refresh, True)
+        except Exception:  # noqa: BLE001
+            pass
+        await asyncio.sleep(3 * 3600)
 
 
 async def main():
@@ -773,6 +797,8 @@ async def main():
     _apply_tg_dns_override()
     # прогрев кеша списка героев в фоне
     asyncio.create_task(_warm_heroes())
+    # актуальный патч Dota 2 (dota2.com/patches)
+    asyncio.create_task(_patch_watch())
     # проверка источников данных (не блокирует запуск)
     asyncio.create_task(asyncio.to_thread(_log_sources_status))
 
