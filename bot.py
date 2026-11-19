@@ -1149,8 +1149,21 @@ async def _hero_poster(data: dict, slug: str) -> str | None:
     num = (patch.current().get("number") or "").strip()
     subtitle = f"ПАТЧ {num}" if num and num != "—" else ""
     out = str(Path(__file__).with_name(f"_hero_{slug}.png"))
+
+    # топ-3 сборки по позициям (D2PT); если сайт недоступен — просто без блока
+    poster_data = dict(data)
     try:
-        await asyncio.to_thread(items_img.build_hero_poster, data, out, subtitle)
+        builds = await asyncio.wait_for(
+            asyncio.to_thread(d2pt.get_builds, data.get("en") or ""),
+            timeout=10)
+        poster_data["top_builds"] = d2pt.top_positions(builds)
+    except Exception:  # noqa: BLE001
+        log.debug("d2pt builds for poster failed", exc_info=True)
+        poster_data["top_builds"] = []
+
+    try:
+        await asyncio.to_thread(items_img.build_hero_poster, poster_data, out,
+                                subtitle)
         return out
     except Exception:  # noqa: BLE001
         log.exception("hero poster failed")
@@ -1521,12 +1534,12 @@ async def cb_poster(cq: CallbackQuery):
     msg = await cq.bot.send_message(chat_id, "⏳ Собираю постер...")
     try:
         data = await asyncio.to_thread(dotabuff.get_hero_overview, slug)
-        num = (patch.current().get("number") or "").strip()
-        subtitle = f"ПАТЧ {num}" if num and num != "—" else ""
-        out = str(Path(__file__).with_name(f"_poster_{slug}.png"))
-        await asyncio.to_thread(items_img.build_hero_poster, data, out, subtitle)
     except Exception:  # noqa: BLE001
-        log.exception("poster failed")
+        log.exception("poster hero failed")
+        await msg.edit_text("😔 Не удалось собрать постер, попробуй позже.")
+        return
+    out = await _hero_poster(data, slug)
+    if not out:
         await msg.edit_text("😔 Не удалось собрать постер, попробуй позже.")
         return
     try:

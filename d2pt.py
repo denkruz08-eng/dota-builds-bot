@@ -43,6 +43,15 @@ POS_TITLES = {
     "all": "All Positions",
 }
 
+# короткие подписи для постера (1080px, левая колонка ~500px)
+POS_SHORT = {
+    1: "Pos 1 · Carry",
+    2: "Pos 2 · Mid",
+    3: "Pos 3 · Offlane",
+    4: "Pos 4 · Soft Sup",
+    5: "Pos 5 · Hard Sup",
+}
+
 _TTL = 60 * 60  # билды меняются редко
 _cache = {}
 
@@ -241,10 +250,80 @@ def get_builds(en_name: str) -> dict:
     if not positions:
         raise RuntimeError("d2pt: билды не найдены")
 
+    # винрейт по всем позициям: в buildData лежит только самая популярная
+    # сборка, а статистика по остальным — отдельными записями heroStats
+    position_stats = {}
+    for m in re.finditer(r'\{hero_id:\d+,position:"pos (\d)",hero_variant', t):
+        rec = _balanced(t, m.start(), "{", "}")
+        head = rec[:400]
+        mm = re.search(r'[,{]matches:(\d+)', head)
+        if not mm:
+            continue
+        matches = int(mm.group(1))
+        mw = re.search(r'[,{]wins:(\d+)', head)
+        wins = int(mw.group(1)) if mw else 0
+        if not matches:
+            continue
+        position_stats[int(m.group(1))] = {
+            "matches": matches,
+            "wins": wins,
+            "winrate": round(wins / matches * 100, 1),
+        }
+
     data = {"en": en_name, "positions": positions,
+            "position_stats": position_stats,
             "url": _hero_url(en_name)}
     _cache[key] = (time.time(), data)
     return data
+
+
+def top_positions(data: dict, limit: int = 3) -> list[dict]:
+    """Топ сборок по винрейту (позиции) — для постера.
+
+    Берём статистику по всем позициям из heroStats (винрейт + число матчей).
+    Позиции с горсткой матчей отсекаются, если есть варианты с нормальной
+    выборкой.
+    """
+    rows = []
+    stats = data.get("position_stats") or {}
+    for p, st in stats.items():
+        matches = st.get("matches") or 0
+        raw = st.get("winrate")
+        if not matches or raw is None:
+            continue
+        try:
+            winrate = float(raw)
+        except (TypeError, ValueError):
+            continue
+        rows.append({
+            "pos": p,
+            "title": POS_TITLES.get(p, f"Pos {p}"),
+            "short": POS_SHORT.get(p, f"Pos {p}"),
+            "winrate": winrate,
+            "matches": matches,
+        })
+
+    if not rows:  # запасной вариант — только собранная сборка
+        for p, po in (data.get("positions") or {}).items():
+            matches = po.get("matches") or 0
+            raw = po.get("winrate")
+            if not matches or not raw:
+                continue
+            try:
+                winrate = float(str(raw).rstrip("%"))
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "pos": p,
+                "title": POS_TITLES.get(p, f"Pos {p}"),
+                "short": POS_SHORT.get(p, f"Pos {p}"),
+                "winrate": winrate,
+                "matches": matches,
+            })
+
+    rows.sort(key=lambda r: (-r["winrate"], -r["matches"]))
+    solid = [r for r in rows if r["matches"] >= 10]
+    return (solid or rows)[:limit]
 
 
 def format_position(data: dict, pos) -> str:
@@ -253,11 +332,26 @@ def format_position(data: dict, pos) -> str:
     lines = [f"🛠 <b>D2PT Pro Build · {data['en']} · {title}</b>"]
 
     if pos == "all":
+        stats = data.get("position_stats") or {}
         lines.append("\n📊 <b>По позициям</b> (матчи / винрейт):")
-        for p in sorted(positions):
-            po = positions[p]
-            if po["matches"]:
-                lines.append(f"  • {POS_TITLES[p]}: {po['matches']} / {po['winrate']}")
+        if stats:
+            for p in sorted(stats):
+                st = stats[p]
+                if st.get("matches"):
+                    lines.append(f"  • {POS_TITLES[p]}: {st['matches']} / "
+                                 f"{st['winrate']:.1f}%")
+        else:
+            for p in sorted(positions):
+                po = positions[p]
+                if po["matches"]:
+                    lines.append(f"  • {POS_TITLES[p]}: {po['matches']} / "
+                                 f"{po['winrate']}")
+        best = top_positions(data)
+        if best:
+            lines.append("\n🏆 <b>Лучшие по винрейту</b>:")
+            for r in best:
+                lines.append(f"  • {r['title']} — {r['winrate']:.1f}% "
+                             f"({r['matches']} матчей)")
         lines.append(f"\nВыбери позицию кнопками выше для полного билда.")
         lines.append(f"🔗 {data['url']}")
         return "\n".join(lines)

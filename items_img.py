@@ -878,7 +878,7 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
 
     # винрейт
     winrate = data.get("winrate")
-    wy = max(470, y + 30)
+    wy = max(410, y + 26)
     if winrate:
         draw.text((m, wy), "ВИНРЕЙТ", font=_font(21, bold=True), fill=GOLD_DIM)
         f_wr = _font(92, bold=True)
@@ -887,7 +887,7 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                   fill=(150, 158, 174))
 
     # матчапы
-    y2 = wy + 205
+    y2 = wy + 175
 
     def matchup(title, rows, sign):
         nonlocal y2
@@ -909,10 +909,39 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
     y2 += 26
     matchup("СЛАБЕЕ ВСЕГО ПРОТИВ", data.get("worst_vs"), "−")
 
+    # топ-3 сборки по позициям (D2PT) с винрейтом
+    builds = data.get("top_builds") or []
+    if builds:
+        y2 += 8
+        src = "D2PT"
+        draw.text((m, y2), "ТОП СБОРКИ", font=_font(21, bold=True),
+                  fill=GOLD_DIM)
+        f_lbl = _font(17)
+        lbl = f"винрейт · {src}"
+        draw.text((m + left_w - draw.textlength(lbl, font=f_lbl), y2 + 4),
+                  lbl, font=f_lbl, fill=(130, 136, 152))
+        y2 += 30
+        for b in builds[:3]:
+            title = b.get("short") or b.get("title") or f"Pos {b.get('pos')}"
+            try:
+                wr = f"{float(b.get('winrate') or 0):.1f}%"
+            except (TypeError, ValueError):
+                wr = ""
+            f_b = _font(27, bold=True)
+            avail = left_w - (draw.textlength(wr, font=f_b) + 18 if wr else 0)
+            while title and draw.textlength(title, font=f_b) > avail:
+                title = title[:-1]
+            draw.text((m, y2), title, font=f_b, fill=(226, 230, 238))
+            if wr:
+                f_w = _font(27, bold=True)
+                draw.text((m + left_w - draw.textlength(wr, font=f_w), y2),
+                          wr, font=f_w, fill=GOLD)
+            y2 += 36
+
     # предметы
     items = (data.get("items") or [])[:3]
     if items:
-        iy = max(958, y2 + 14)
+        iy = max(958, y2 + 22)
         draw.text((m, iy), "ТОП ПРЕДМЕТЫ", font=_font(24, bold=True), fill=GOLD)
         iw, ih = 150, 109
         step = 200
