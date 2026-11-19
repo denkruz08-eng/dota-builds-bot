@@ -222,7 +222,6 @@ def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardM
         ],
         [
             InlineKeyboardButton(text="📖 Гайды", callback_data=f"dbguide:{slug}"),
-            InlineKeyboardButton(text="🖼 Постер", callback_data=f"poster:{slug}"),
             InlineKeyboardButton(text="🩹 Патч", callback_data=f"changes:{slug}"),
         ],
         [
@@ -1134,6 +1133,30 @@ def format_changes(hero_en: str, changes: dict) -> str:
     return "\n".join(lines)
 
 
+def hero_caption(en: str, changes: dict | None) -> str:
+    """Короткая подпись под постером: имя, патч, подсказка про кнопки."""
+    lines = [f"🛡 <b>{esc(en)}</b>"]
+    if changes and changes.get("total"):
+        n = changes["total"]
+        lines.append(f"🩹 в патче {esc(changes['version'])}: {n} "
+                     f"{_plural(n, 'изменение', 'изменения', 'изменений')}")
+    lines.append("<i>сборки по позициям — кнопками ниже</i>")
+    return "\n".join(lines)
+
+
+async def _hero_poster(data: dict, slug: str) -> str | None:
+    """Собирает постер героя во временный файл; None — если не вышло."""
+    num = (patch.current().get("number") or "").strip()
+    subtitle = f"ПАТЧ {num}" if num and num != "—" else ""
+    out = str(Path(__file__).with_name(f"_hero_{slug}.png"))
+    try:
+        await asyncio.to_thread(items_img.build_hero_poster, data, out, subtitle)
+        return out
+    except Exception:  # noqa: BLE001
+        log.exception("hero poster failed")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Герой дня
 # ---------------------------------------------------------------------------
@@ -1430,15 +1453,15 @@ async def fallback_text(m: Message):
 
 
 async def show_hero(m_or_cq, h: dict):
-    """m_or_cq: Message (ответ) или CallbackQuery (заменяем старый экран)."""
+    """Главный экран героя — постер. Message: ответ, CallbackQuery: замена."""
     chat_id = (m_or_cq.chat.id if isinstance(m_or_cq, Message)
                else m_or_cq.message.chat.id)
+    bot = m_or_cq.bot
     if isinstance(m_or_cq, Message):
-        wait = await m_or_cq.answer("⏳ Собираю данные с dotabuff...")
+        wait = await m_or_cq.answer("⏳ Собираю постер...")
     else:
         await m_or_cq.answer()
-        wait = await m_or_cq.bot.send_message(
-            chat_id, "⏳ Собираю данные с dotabuff...")
+        wait = await bot.send_message(chat_id, "⏳ Собираю постер...")
 
     try:
         data = await asyncio.to_thread(dotabuff.get_hero_overview, h["slug"])
@@ -1450,26 +1473,34 @@ async def show_hero(m_or_cq, h: dict):
     en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
     changes = await hero_changes(en)
     fav = store.is_favorite(chat_id, h["slug"])
-    text = format_hero_card(data, changes)
     kb = hero_card_keyboard(h["slug"], en, fav)
+    poster = await _hero_poster(data, h["slug"])
 
-    if isinstance(m_or_cq, Message):
-        try:
-            await wait.edit_text(text, reply_markup=kb,
-                                 disable_web_page_preview=True)
-        except Exception:  # noqa: BLE001
-            await wait.answer(text, reply_markup=kb,
-                              disable_web_page_preview=True)
-        return
-
-    # замена экрана: убираем «часики» и сообщение, на котором нажали кнопку
     try:
         await wait.delete()
     except Exception:  # noqa: BLE001
         pass
-    await _swap(m_or_cq)
-    await m_or_cq.bot.send_message(chat_id, text, reply_markup=kb,
-                                   disable_web_page_preview=True)
+    if not isinstance(m_or_cq, Message):
+        # замена экрана: убираем сообщение, на котором нажали кнопку
+        await _swap(m_or_cq)
+
+    if poster:
+        try:
+            await bot.send_photo(chat_id, FSInputFile(poster),
+                                 caption=hero_caption(en, changes),
+                                 reply_markup=kb)
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("hero poster send failed")
+        finally:
+            try:
+                Path(poster).unlink()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # запасной вариант — текстовая карточка
+    await bot.send_message(chat_id, format_hero_card(data, changes),
+                           reply_markup=kb, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "daily")
