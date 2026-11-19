@@ -438,3 +438,148 @@ def get_match(match_id: int) -> dict:
         "players": sorted(rows, key=lambda r: (not r["radiant"], -r["net"])),
     }
 
+
+# ----------------------------------------------------------------------------
+# Профиль игрока по Steam ID
+# ----------------------------------------------------------------------------
+STEAM64_BASE = 76561197960265728
+
+_RANK_MEDALS = {
+    1: "Herald", 2: "Guardian", 3: "Crusader", 4: "Archon",
+    5: "Legend", 6: "Ancient", 7: "Divine", 8: "Immortal",
+}
+
+
+def normalize_account(raw) -> int | None:
+    """SteamID64 / account_id / ссылка на профиль -> account_id OpenDota."""
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if not digits:
+        return None
+    n = int(digits)
+    if n > STEAM64_BASE:
+        n -= STEAM64_BASE
+    if 0 < n < 2 ** 32:
+        return n
+    return None
+
+
+def rank_name(rank_tier) -> str:
+    """rank_tier OpenDota (например 53) -> «Legend 3»."""
+    try:
+        tier = int(rank_tier)
+    except (TypeError, ValueError):
+        return ""
+    if tier < 10:
+        return ""
+    medal, stars = divmod(tier, 10)
+    name = _RANK_MEDALS.get(medal)
+    if not name:
+        return ""
+    if medal == 8 or not stars:
+        return name
+    return f"{name} {stars}"
+
+
+def hero_id(name: str) -> int | None:
+    """Английское имя героя -> id (для патчноутов)."""
+    hero = find_hero(name)
+    return int(hero["id"]) if hero else None
+
+
+def get_player(account_id: int, matches: int = 50) -> dict:
+    """Профиль игрока: ранг, винрейт, последние матчи, пул героев.
+
+    Тянет четыре эндпоинта OpenDota; если часть данных закрыта настройками
+    приватности, отдаёт то, что доступно (без исключения).
+    """
+    acc = int(account_id)
+    prof = _get(f"/players/{acc}") or {}
+    profile = prof.get("profile") or {}
+    # OpenDota отдаёт пустую «заглушку» даже для несуществующего ID —
+    # настоящий профиль всегда имеет имя или аватар
+    if not profile or not (profile.get("personaname") or profile.get("avatarfull")):
+        raise RuntimeError("OpenDota: игрок не найден")
+
+    names = {}
+    try:
+        names = {h["id"]: h["localized_name"] for h in _load_heroes()}
+    except Exception:  # noqa: BLE001
+        pass
+
+    win = lose = None
+    try:
+        wl = _get(f"/players/{acc}/wl") or {}
+        win, lose = wl.get("win"), wl.get("lose")
+    except Exception:  # noqa: BLE001
+        pass
+
+    raw_recent = []
+    try:
+        raw_recent = _get(f"/players/{acc}/recentMatches") or []
+    except Exception:  # noqa: BLE001
+        pass
+
+    recent = []
+    for m in raw_recent[:10]:
+        slot = m.get("player_slot") or 0
+        won = bool(m.get("radiant_win")) == (slot < 128)
+        recent.append({
+            "id": m.get("match_id"),
+            "hero": names.get(m.get("hero_id"), "Hero"),
+            "hero_id": m.get("hero_id"),
+            "won": won,
+            "k": m.get("kills") or 0,
+            "d": m.get("deaths") or 0,
+            "a": m.get("assists") or 0,
+            "gpm": m.get("gold_per_min") or 0,
+            "xpm": m.get("xp_per_min") or 0,
+            "duration": m.get("duration") or 0,
+            "start": m.get("start_time") or 0,
+        })
+
+    raw_matches = []
+    try:
+        raw_matches = _get(f"/players/{acc}/matches?limit={max(20, int(matches))}") or []
+    except Exception:  # noqa: BLE001
+        pass
+
+    agg = {}
+    for m in raw_matches:
+        hid = m.get("hero_id")
+        if not hid:
+            continue
+        slot = m.get("player_slot") or 0
+        won = bool(m.get("radiant_win")) == (slot < 128)
+        row = agg.setdefault(hid, {"hero": names.get(hid, "Hero"),
+                                   "hero_id": hid, "games": 0, "wins": 0})
+        row["games"] += 1
+        row["wins"] += int(won)
+    pool = sorted(agg.values(), key=lambda r: (-r["games"], -r["wins"]))[:5]
+    for r in pool:
+        r["winrate"] = r["wins"] / r["games"] * 100 if r["games"] else 0.0
+
+    recent_wr = None
+    if recent:
+        recent_wr = sum(1 for r in recent if r["won"]) / len(recent) * 100
+
+    return {
+        "account_id": acc,
+        "steamid": profile.get("steamid") or "",
+        "name": profile.get("personaname") or profile.get("name") or f"Игрок {acc}",
+        "real_name": profile.get("name") or "",
+        "avatar": profile.get("avatarfull") or profile.get("avatarmedium") or "",
+        "country": profile.get("loccountrycode") or "",
+        "profile_url": profile.get("profileurl") or "",
+        "rank_tier": prof.get("rank_tier"),
+        "rank": rank_name(prof.get("rank_tier")),
+        "leaderboard": prof.get("leaderboard_rank"),
+        "mmr": prof.get("computed_mmr"),
+        "win": win,
+        "lose": lose,
+        "recent": recent,
+        "recent_winrate": recent_wr,
+        "pool": pool,
+        "hidden": not (win or lose or recent),
+        "matches_sampled": len(raw_matches),
+    }
+

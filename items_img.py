@@ -25,11 +25,15 @@ import d2pt
 ITEM_CDN = ("https://cdn.cloudflare.steamstatic.com/apps/dota2/images/"
             "dota_react/items/{n}.png")
 HERO_CDN = d2pt.BASE + "/static/heroes/{n}_lg.jpg"
+PORTRAIT_CDN = ("https://cdn.cloudflare.steamstatic.com/apps/dota2/images/"
+                "heroes/{n}_vert.jpg")
 
 _HERE = Path(__file__).parent
 ITEMS_DIR = _HERE / "icons" / "items"
 HEROES_DIR = _HERE / "icons" / "heroes"
+PORTRAITS_DIR = _HERE / "icons" / "portraits"
 HERO_MAP_FILE = _HERE / "heroes_icons.json"
+ITEMS_MAP_FILE = _HERE / "icons" / "items_map.json"
 
 # прокси как запасной вариант скачивания (как в боте)
 _PX = None
@@ -116,6 +120,47 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9_]", "", s)
 
 
+_item_map = None
+
+
+def _item_name_map() -> dict:
+    """{display name: internal name}: «Blink Dagger» -> blink.
+
+    Нужен, потому что dotabuff отдаёт только название, а CDN Valve ждёт
+    внутреннее имя. Словарь тянем из OpenDota один раз и кешируем на диск.
+    """
+    global _item_map
+    if _item_map is not None:
+        return _item_map
+    try:
+        _item_map = json.loads(ITEMS_MAP_FILE.read_text(encoding="utf-8"))
+        if _item_map:
+            return _item_map
+    except Exception:  # noqa: BLE001
+        _item_map = {}
+    try:
+        r = crequests.get("https://api.opendota.com/api/constants/items",
+                          impersonate="chrome", timeout=25)
+        if r.status_code == 200:
+            raw = r.json()
+            mapping = {}
+            for internal, info in (raw or {}).items():
+                if isinstance(info, dict) and info.get("dname"):
+                    mapping.setdefault(info["dname"], internal)
+            if mapping:
+                _item_map = mapping
+                try:
+                    ITEMS_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    ITEMS_MAP_FILE.write_text(
+                        json.dumps(mapping, ensure_ascii=False),
+                        encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception:  # noqa: BLE001
+        pass
+    return _item_map or {}
+
+
 # ---------------------------------------------------------------------------
 # предметы
 # ---------------------------------------------------------------------------
@@ -123,13 +168,18 @@ def get_item_icon(internal: str, display: str = ""):
     """Image (RGBA) иконки предмета или None. Кеш на диске."""
     if not internal and not display:
         return None
-    # иногда d2pt отдаёт display name вместо внутреннего имени —
-    # тогда подстраховываемся слагом от display
+    # иногда d2pt/dotabuff отдают display name вместо внутреннего имени —
+    # тогда подстраховываемся слагом от display и словарём предметов
     candidates = []
     if internal:
         candidates.append(internal)
-    if display and _slug(display) not in candidates:
-        candidates.append(_slug(display))
+    if display:
+        alias = _item_name_map().get(display)
+        if alias and alias not in candidates:
+            candidates.append(alias)
+        slug = _slug(display)
+        if slug not in candidates:
+            candidates.append(slug)
     for c in candidates:
         if not c:
             continue
@@ -227,19 +277,24 @@ _HERO_OVERRIDES = {
 }
 
 
+def _hero_candidates(en_name: str) -> list:
+    """Возможные внутренние имена Valve: маппинг d2pt, оверрайды, слаг."""
+    mapping = _hero_name_map()
+    out = []
+    if en_name in mapping:
+        out.append(mapping[en_name])
+    if en_name in _HERO_OVERRIDES:
+        out.append(_HERO_OVERRIDES[en_name])
+    guess = _slug(en_name)
+    if guess not in out:
+        out.append(guess)
+    return out
+
+
 def get_hero_icon(en_name: str):
     """Image (RGBA) портрета героя или None. Кеш на диске."""
     HEROES_DIR.mkdir(parents=True, exist_ok=True)
-    mapping = _hero_name_map()
-    candidates = []
-    if en_name in mapping:
-        candidates.append(mapping[en_name])
-    if en_name in _HERO_OVERRIDES:
-        candidates.append(_HERO_OVERRIDES[en_name])
-    guess = _slug(en_name)
-    if guess not in candidates:
-        candidates.append(guess)
-    for internal in candidates:
+    for internal in _hero_candidates(en_name):
         f = HEROES_DIR / f"{internal}_lg.jpg"
         if f.exists():
             try:
@@ -248,6 +303,34 @@ def get_hero_icon(en_name: str):
                 continue
         try:
             data = _download(HERO_CDN.format(n=internal))
+        except Exception:  # noqa: BLE001
+            continue
+        if not data:
+            continue
+        try:
+            f.write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert("RGBA")
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def get_hero_portrait(en_name: str, internal: str = ""):
+    """Вертикальный портрет героя (235x272) для постера. Кеш на диске."""
+    PORTRAITS_DIR.mkdir(parents=True, exist_ok=True)
+    candidates = []
+    if internal:
+        candidates.append(internal)
+    candidates += [c for c in _hero_candidates(en_name) if c not in candidates]
+    for name in candidates:
+        f = PORTRAITS_DIR / f"{name}_vert.jpg"
+        if f.exists():
+            try:
+                return Image.open(f).convert("RGBA")
+            except Exception:  # noqa: BLE001
+                continue
+        try:
+            data = _download(PORTRAIT_CDN.format(n=name))
         except Exception:  # noqa: BLE001
             continue
         if not data:
@@ -653,4 +736,213 @@ def build_match_image(match: dict, out_path: str):
             y += ROW_H
 
     img.save(out_path, "PNG")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# карточка-постер героя для шаринга (1080 × 1350 — формат сторис)
+# ---------------------------------------------------------------------------
+POSTER_W, POSTER_H = 1080, 1350
+POSTER_BG = (10, 13, 21)
+GOLD = (216, 180, 90)
+GOLD_DIM = (154, 128, 64)
+
+
+def _cover(im, size):
+    """Масштабирует картинку «по размеру» и обрезает по центру."""
+    w, h = size
+    scale = max(w / im.width, h / im.height)
+    nw = max(1, int(im.width * scale + 0.5))
+    nh = max(1, int(im.height * scale + 0.5))
+    im = im.resize((nw, nh), Image.LANCZOS)
+    x, y = (nw - w) // 2, (nh - h) // 2
+    return im.crop((x, y, x + w, y + h))
+
+
+def _wrap(draw, text, font, max_w, max_lines=2):
+    """Разбивает текст на строки; «…» только если слова реально не влезли."""
+    words = str(text or "").split()
+    lines, cur = [], ""
+    for word in words:
+        trial = (cur + " " + word).strip()
+        if not cur or draw.textlength(trial, font=font) <= max_w:
+            cur = trial
+            continue
+        lines.append(cur)
+        cur = word
+        if len(lines) >= max_lines:
+            break
+    truncated = False
+    if cur:
+        if len(lines) < max_lines:
+            lines.append(cur)
+            cur = ""
+        else:
+            truncated = True
+    if truncated and lines:
+        last = lines[-1]
+        while last and draw.textlength(last + "…", font=font) > max_w:
+            last = last[:-1]
+        lines[-1] = last.rstrip() + "…"
+    return lines
+
+
+def _fit_font(draw, text, max_w, max_size, min_size, bold=True):
+    for size in range(max_size, min_size - 1, -1):
+        f = _font(size, bold=bold)
+        if draw.textlength(str(text), font=f) <= max_w:
+            return f
+    return _font(min_size, bold=bold)
+
+
+def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
+    """Красивый постер 1080×1350: портрет, роли, винрейт, топ-предметы."""
+    en = data.get("en") or (data.get("slug") or "").replace("-", " ").title()
+    W, H = POSTER_W, POSTER_H
+    m = 72
+
+    portrait = get_hero_portrait(en)
+    if portrait:
+        base = _cover(portrait.convert("RGB"), (W, H))
+        base = base.filter(ImageFilter.GaussianBlur(34))
+    else:
+        base = Image.new("RGB", (W, H), POSTER_BG)
+    img = Image.alpha_composite(base.convert("RGBA"),
+                                Image.new("RGBA", (W, H), (8, 10, 16, 208)))
+
+    # затемнение снизу, чтобы текст читался на любом арте
+    grad = Image.new("L", (1, H), 0)
+    for y in range(H):
+        t = max(0.0, (y - H * 0.42) / (H * 0.58))
+        grad.putpixel((0, y), int(215 * (t ** 1.5)))
+    dark = Image.new("RGBA", (W, H), (5, 7, 12, 255))
+    dark.putalpha(grad.resize((W, H)))
+    img = Image.alpha_composite(img, dark)
+    draw = ImageDraw.Draw(img)
+
+    # тонкая золотая линия сверху + шапка
+    draw.rectangle([0, 0, W, 5], fill=GOLD)
+    draw.text((m, 54), "DOTA 2 · BUILDS & META", font=_font(23, bold=True),
+              fill=GOLD)
+    if subtitle:
+        f_sub = _font(23, bold=True)
+        tw = draw.textlength(subtitle, font=f_sub)
+        draw.text((W - m - tw, 54), subtitle, font=f_sub, fill=(190, 196, 210))
+    draw.line([m, 102, W - m, 102], fill=(70, 74, 88), width=2)
+
+    # портрет справа
+    pw, ph = 400, 462
+    px, py = W - m - pw, 136
+    if portrait:
+        card = portrait.convert("RGB").resize((pw, ph), Image.LANCZOS)
+        card = card.convert("RGBA")
+        mask = Image.new("L", (pw, ph), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, pw - 1, ph - 1],
+                                              radius=26, fill=255)
+        card.putalpha(mask)
+        glow = Image.new("RGBA", (pw + 48, ph + 48), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).rounded_rectangle([24, 24, pw + 23, ph + 23],
+                                               radius=28, fill=(0, 0, 0, 170))
+        img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(16)),
+                            (px - 24, py - 16))
+        img.alpha_composite(card, (px, py))
+        draw.rounded_rectangle([px, py, px + pw, py + ph], radius=26,
+                               outline=GOLD, width=3)
+
+    left_w = (px - 28 - m) if portrait else (W - 2 * m)
+
+    # имя
+    name = data.get("en") or "Dota 2"
+    f_name = _fit_font(draw, name, left_w, 88, 46)
+    name_lines = _wrap(draw, name, f_name, left_w, max_lines=2)
+    y = 150
+    lh = int(getattr(f_name, "size", 64) * 1.12)
+    for line in name_lines:
+        draw.text((m, y), line, font=f_name, fill=(238, 240, 246))
+        y += lh
+
+    # роли — подбираем размер шрифта, чтобы влезли в две строки без обрезки
+    attrs = data.get("attrs") or []
+    if attrs:
+        roles = " · ".join(str(a) for a in attrs)
+        f_roles = _font(24)
+        for size in range(26, 17, -1):
+            f_roles = _font(size)
+            lines = _wrap(draw, roles, f_roles, left_w, max_lines=2)
+            if lines and not lines[-1].endswith("…"):
+                break
+        for line in lines:
+            y += 4
+            draw.text((m, y), line, font=f_roles, fill=(168, 176, 192))
+            y += int(size * 1.28)
+
+    # винрейт
+    winrate = data.get("winrate")
+    wy = max(470, y + 30)
+    if winrate:
+        draw.text((m, wy), "ВИНРЕЙТ", font=_font(21, bold=True), fill=GOLD_DIM)
+        f_wr = _font(92, bold=True)
+        draw.text((m, wy + 30), str(winrate), font=f_wr, fill=(246, 248, 252))
+        draw.text((m, wy + 132), "публичные матчи за неделю", font=_font(21),
+                  fill=(150, 158, 174))
+
+    # матчапы
+    y2 = wy + 205
+
+    def matchup(title, rows, sign):
+        nonlocal y2
+        if not rows:
+            return
+        draw.text((m, y2), title, font=_font(21, bold=True), fill=GOLD_DIM)
+        y2 += 34
+        for r in rows[:2]:
+            hero = r.get("hero") or ""
+            adv = str(r.get("adv") or "").replace("+", "").strip()
+            line = f"{hero}  {sign}{adv}"
+            f = _font(31, bold=True)
+            while line and draw.textlength(line, font=f) > left_w:
+                line = line[:-1]
+            draw.text((m, y2), line, font=f, fill=(226, 230, 238))
+            y2 += 40
+
+    matchup("СИЛЬНЕЕ ВСЕГО ПРОТИВ", data.get("best_vs"), "+")
+    y2 += 26
+    matchup("СЛАБЕЕ ВСЕГО ПРОТИВ", data.get("worst_vs"), "−")
+
+    # предметы
+    items = (data.get("items") or [])[:3]
+    if items:
+        iy = max(958, y2 + 14)
+        draw.text((m, iy), "ТОП ПРЕДМЕТЫ", font=_font(24, bold=True), fill=GOLD)
+        iw, ih = 150, 109
+        step = 200
+        for i, it in enumerate(items):
+            ix = m + i * step
+            iyy = iy + 44
+            icon = get_item_icon("", display=it.get("name", ""))
+            if icon is not None:
+                ic = icon.resize((iw, ih))
+                img.paste(ic, (ix, iyy), ic)
+            draw.rounded_rectangle([ix - 1, iyy - 1, ix + iw, iyy + ih],
+                                   radius=8, outline=(72, 78, 94), width=2)
+            f_in = _font(20, bold=True)
+            ty = iyy + ih + 10
+            for line in _wrap(draw, it.get("name", ""), f_in, iw + 24,
+                              max_lines=2):
+                draw.text((ix, ty), line, font=f_in, fill=(206, 212, 224))
+                ty += 25
+            wr = it.get("winrate")
+            if wr:
+                draw.text((ix, ty + 2), str(wr), font=_font(18),
+                          fill=(140, 148, 164))
+
+    # подвал
+    draw.line([m, 1218, W - m, 1218], fill=(60, 64, 78), width=2)
+    draw.text((m, 1244), "@Mirsborka_bot", font=_font(30, bold=True), fill=GOLD)
+    f_tag = _font(21)
+    tag = "сборки · мета · разбор матчей"
+    tw = draw.textlength(tag, font=f_tag)
+    draw.text((W - m - tw, 1250), tag, font=f_tag, fill=(150, 158, 174))
+
+    img.convert("RGB").save(out_path, "PNG", optimize=True)
     return out_path

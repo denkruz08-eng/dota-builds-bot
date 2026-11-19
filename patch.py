@@ -12,7 +12,10 @@ https://www.dota2.com/patches/): `datafeed/patchnoteslist`.
     и потом раз в несколько часов;
   • если dota2.com недоступен, остаётся последнее известное значение.
 """
+import html as _html
 import json
+import re
+import threading
 import time
 from pathlib import Path
 
@@ -79,3 +82,167 @@ def badge() -> str:
         return ""
     d = date_text(p.get("timestamp") or 0)
     return f"🩹 Патч <b>{p['number']}</b>" + (f" · {d}" if d else "")
+
+
+# ---------------------------------------------------------------------------
+# Изменения героев в текущем патче
+# ---------------------------------------------------------------------------
+# Общий фид патчноутов отдаёт всё дерево изменений: база героя, способности,
+# таланты. Названия способностей лежат в отдельном фиде herodata — тянем их
+# только для тех героев, чью карточку реально открыли, и кешируем id → имя.
+NOTES_URL = ("https://www.dota2.com/datafeed/patchnotes"
+             "?version={version}&language=english")
+HERODATA_URL = ("https://www.dota2.com/datafeed/herodata"
+                "?language=english&hero_id={hero_id}")
+
+_DATA_DIR = _HERE / "data"
+_notes_lock = threading.Lock()
+_notes_cache: dict = {}          # версия патча -> {hero_id: узел фида}
+_ability_names: dict = {}        # ability_id -> английское название
+_ability_loaded = False
+
+
+def _clean(text) -> str:
+    """Убирает HTML из заметок патча и склеивает пробелы."""
+    if not text:
+        return ""
+    s = re.sub(r"<br\s*/?>", " ", str(text), flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = _html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _texts(items) -> list:
+    """Собирает все строки заметок из вложенной структуры фида."""
+    out = []
+    if isinstance(items, list):
+        for it in items:
+            out.extend(_texts(it))
+    elif isinstance(items, dict):
+        note = _clean(items.get("note"))
+        if note:
+            out.append(note)
+        for key in ("sub_notes", "notes", "generic"):
+            if key in items:
+                out.extend(_texts(items[key]))
+    elif isinstance(items, str):
+        note = _clean(items)
+        if note:
+            out.append(note)
+    return out
+
+
+def _load_notes(version: str) -> dict:
+    """Заметки патча (кеш: память -> файл в data/ -> dota2.com)."""
+    hit = _notes_cache.get(version)
+    if hit:
+        return hit
+    with _notes_lock:
+        hit = _notes_cache.get(version)
+        if hit:
+            return hit
+        f = _DATA_DIR / f"patchnotes_{version}.json"
+        heroes = None
+        try:
+            heroes = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+        if not isinstance(heroes, list) or not heroes:
+            r = crequests.get(NOTES_URL.format(version=version),
+                              impersonate="chrome", timeout=25)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            heroes = r.json().get("heroes") or []
+            try:
+                _DATA_DIR.mkdir(parents=True, exist_ok=True)
+                f.write_text(json.dumps(heroes, ensure_ascii=False),
+                             encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+        data = {h.get("hero_id"): h for h in heroes if h.get("hero_id")}
+        _notes_cache[version] = data
+        return data
+
+
+def _load_ability_names() -> dict:
+    global _ability_loaded
+    if _ability_loaded:
+        return _ability_names
+    with _notes_lock:
+        if _ability_loaded:
+            return _ability_names
+        try:
+            raw = json.loads((_DATA_DIR / "ability_names.json")
+                             .read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                _ability_names.update({int(k): v for k, v in raw.items()})
+        except Exception:  # noqa: BLE001
+            pass
+        _ability_loaded = True
+    return _ability_names
+
+
+def _ability_map(hero_id: int) -> dict:
+    """ability_id -> название способности (фид herodata, кеш на диске)."""
+    names = _load_ability_names()
+    try:
+        r = crequests.get(HERODATA_URL.format(hero_id=hero_id),
+                          impersonate="chrome", timeout=20)
+        if r.status_code != 200:
+            return names
+        result = r.json().get("result") or {}
+        heroes = (result.get("data") or {}).get("heroes") or []
+        new = {}
+        for a in (heroes[0].get("abilities") or []) if heroes else []:
+            aid, name = a.get("id"), a.get("name_loc")
+            if aid and name:
+                new[int(aid)] = name
+        if new:
+            names.update(new)
+            try:
+                _DATA_DIR.mkdir(parents=True, exist_ok=True)
+                (_DATA_DIR / "ability_names.json").write_text(
+                    json.dumps({str(k): v for k, v in names.items()},
+                               ensure_ascii=False), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
+def hero_changes(hero_id: int, limit: int = 40) -> dict | None:
+    """Изменения героя в текущем патче.
+
+    Возвращает {"version", "items": [(заголовок, текст), ...], "total"}
+    или None, если героя нет в патчноутах.
+    """
+    ver = (current().get("number") or "").strip()
+    if not ver or ver == "—" or not hero_id:
+        return None
+    try:
+        notes = _load_notes(ver)
+    except Exception:  # noqa: BLE001
+        return None
+    hero = notes.get(int(hero_id))
+    if not hero:
+        return None
+
+    items = [("База", t) for t in _texts(hero.get("hero_notes"))]
+
+    abilities = []
+    for ab in hero.get("abilities") or []:
+        found = _texts(ab.get("ability_notes"))
+        if found:
+            abilities.append((ab.get("ability_id"), found))
+    if abilities:
+        names = _ability_map(int(hero_id))
+        for aid, found in abilities:
+            name = names.get(int(aid)) if aid else None
+            for t in found:
+                items.append((name or "Способность", t))
+
+    items += [("Таланты", t) for t in _texts(hero.get("talent_notes"))]
+    if not items:
+        return None
+    return {"version": ver, "items": items[:limit], "total": len(items)}

@@ -177,6 +177,7 @@ MENU_COUNTER = "⚔️ Контр-пик"
 MENU_DAILY = "🎲 Герой дня"
 MENU_FAVS = "⭐ Избранное"
 MENU_MATCH = "📈 Разбор матча"
+MENU_PROFILE = "👤 Мой профиль"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -185,7 +186,8 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=MENU_PICK), KeyboardButton(text=MENU_FIND)],
             [KeyboardButton(text=MENU_META), KeyboardButton(text=MENU_COUNTER)],
             [KeyboardButton(text=MENU_DAILY), KeyboardButton(text=MENU_FAVS)],
-            [KeyboardButton(text=MENU_MATCH), KeyboardButton(text=MENU_HOME)],
+            [KeyboardButton(text=MENU_PROFILE), KeyboardButton(text=MENU_MATCH)],
+            [KeyboardButton(text=MENU_HOME)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -219,13 +221,15 @@ def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardM
             InlineKeyboardButton(text="📊 All", callback_data=f"pos:{en}:all"),
         ],
         [
-            InlineKeyboardButton(text="📖 Dotabuff Guides", callback_data=f"dbguide:{slug}"),
-            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hero:{slug}"),
+            InlineKeyboardButton(text="📖 Гайды", callback_data=f"dbguide:{slug}"),
+            InlineKeyboardButton(text="🖼 Постер", callback_data=f"poster:{slug}"),
+            InlineKeyboardButton(text="🩹 Патч", callback_data=f"changes:{slug}"),
         ],
         [
             InlineKeyboardButton(
                 text=("🗑 Убрать из избранного" if fav else "⭐ В избранное"),
                 callback_data=f"fav:{slug}|{en}"),
+            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hero:{slug}"),
         ],
         [
             InlineKeyboardButton(text="🌐 Dotabuff",
@@ -238,7 +242,7 @@ def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def format_hero_card(h: dict) -> str:
+def format_hero_card(h: dict, changes: dict | None = None) -> str:
     ru = h["en"]
     lines = [f"🛡 <b>{esc(ru)}</b>"]
     if h.get("source") == "opendota":
@@ -264,6 +268,15 @@ def format_hero_card(h: dict) -> str:
     if h["worst_vs"]:
         lines.append("\n🔴 <b>Слаб против:</b> " + ", ".join(
             f"{esc(v['hero'])} ({v['adv']})" for v in h["worst_vs"]))
+
+    if changes and changes.get("items"):
+        lines.append(f"\n🩹 <b>Что изменилось в {esc(changes['version'])}</b>")
+        for title, note in changes["items"][:5]:
+            head = "" if title in ("База", "") else f"<b>{esc(title)}:</b> "
+            lines.append(f"  • {head}{esc(_clip(note, 150))}")
+        rest = changes.get("total", 0) - 5
+        if rest > 0:
+            lines.append(f"  <i>…и ещё {rest} — открой кнопку «🩹 Патч»</i>")
 
     lines.append(f"\n🔗 {dotabuff.BASE}/heroes/{h['slug']}")
     return "\n".join(lines)
@@ -312,6 +325,10 @@ class Match(StatesGroup):
 
 
 class Counter(StatesGroup):
+    waiting = State()
+
+
+class Profile(StatesGroup):
     waiting = State()
 
 
@@ -394,6 +411,23 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
 def _bar(pct: float) -> str:
     n = max(0, min(10, round(pct * 10)))
     return "▰" * n + "▱" * (10 - n)
+
+
+def _clip(text: str, limit: int) -> str:
+    """Обрезает длинную заметку по границе слова."""
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit].rsplit(" ", 1)[0].strip()
+    return (cut or s[:limit]).rstrip(" ,.;:") + "…"
+
+
+async def _swap(cq: CallbackQuery) -> None:
+    """Убирает сообщение, на котором нажали кнопку: новый экран встаёт на его место."""
+    try:
+        await cq.message.delete()
+    except Exception:  # noqa: BLE001
+        log.debug("не удалось удалить сообщение", exc_info=True)
 
 
 def match_keyboard(m: dict) -> InlineKeyboardMarkup:
@@ -607,6 +641,10 @@ async def _warm_heroes():
         await fetch_heroes()
     except Exception as e:  # noqa: BLE001
         log.warning("не удалось прогреть список героев: %s", repr(e)[:120])
+    try:
+        await asyncio.to_thread(opendota._load_heroes)
+    except Exception as e:  # noqa: BLE001
+        log.warning("не удалось прогреть heroStats: %s", repr(e)[:120])
 
 
 async def find_slug(en: str) -> str:
@@ -683,7 +721,8 @@ START_TEXT = (
     "🛡 <b>Выбрать героя</b> — портреты и статистика\n"
     "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
     "📊 <b>Мета по MMR</b> · ⚔️ <b>Контр-пик</b> · 🎲 <b>Герой дня</b>\n"
-    "⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b> · 🏠 <b>Главное меню</b>\n"
+    "⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b>\n"
+    "👤 <b>Профиль игрока</b> по Steam ID · 🏠 <b>Главное меню</b>\n"
     "\n"
     "<blockquote>📊 Карточка героя с dotabuff · про-билды <b>Pos 1–5</b> ·"
     " иконки предметов · тайминги закупа · таланты</blockquote>\n"
@@ -870,9 +909,25 @@ async def cmd_counter(m: Message, state: FSMContext):
     await m.answer(COUNTER_PROMPT)
 
 
+@router.message(Command("me", "profile"))
+async def cmd_me(m: Message, state: FSMContext):
+    await state.clear()
+    tail = (m.text or "").partition(" ")[2].strip()
+    acc = opendota.normalize_account(tail) if tail else None
+    if acc:
+        await send_profile(m.bot, m.chat.id, acc)
+        return
+    saved = store.profile_id(m.chat.id)
+    if saved:
+        await send_profile(m.bot, m.chat.id, int(saved))
+        return
+    await _ask_profile(m, state)
+
+
 # кнопки нижнего меню (регистрируется до поиска, чтобы работали в любом состоянии)
 @router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND, MENU_META,
-                            MENU_COUNTER, MENU_DAILY, MENU_FAVS, MENU_MATCH}))
+                            MENU_COUNTER, MENU_DAILY, MENU_FAVS, MENU_MATCH,
+                            MENU_PROFILE}))
 async def on_menu_button(m: Message, state: FSMContext):
     await state.clear()
     if m.text == MENU_PICK:
@@ -893,6 +948,12 @@ async def on_menu_button(m: Message, state: FSMContext):
     elif m.text == MENU_MATCH:
         await state.set_state(Match.waiting)
         await m.answer(MATCH_PROMPT)
+    elif m.text == MENU_PROFILE:
+        saved = store.profile_id(m.chat.id)
+        if saved:
+            await send_profile(m.bot, m.chat.id, int(saved))
+        else:
+            await _ask_profile(m, state)
     else:
         await send_start(m)
 
@@ -927,6 +988,150 @@ async def send_favorites(m: Message):
     rows.append([InlineKeyboardButton(text="🧹 Очистить избранное", callback_data="favclear")])
     await m.answer(f"⭐ <b>Избранные герои</b> · {len(chosen)}",
                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+# ---------------------------------------------------------------------------
+# Профиль игрока по Steam ID
+# ---------------------------------------------------------------------------
+PROFILE_PROMPT = (
+    "👤 Пришли Steam ID — 17 цифр (или ID друга из Dota, 9–10 цифр):\n"
+    "например: <code>76561198030654385</code>\n\n"
+    "<i>Профиль должен быть открыт в Dota 2: Настройки → "
+    "«Общедоступные данные матчей».</i>"
+)
+
+
+def format_profile(p: dict) -> str:
+    name = p.get("name") or "Игрок"
+    lines = [f"👤 <b>{esc(name)}</b>"]
+    bits = []
+    if p.get("rank"):
+        bits.append(f"🏅 {esc(p['rank'])}")
+    if p.get("leaderboard"):
+        rank_pos = f"{int(p['leaderboard']):,}".replace(",", " ")
+        bits.append(f"🏆 Топ-{rank_pos}")
+    if p.get("country"):
+        bits.append(f"🌍 {esc(p['country'])}")
+    if bits:
+        lines.append(" · ".join(bits))
+    if p.get("steamid"):
+        lines.append(f"<code>{p['steamid']}</code>")
+
+    win = p.get("win") or 0
+    lose = p.get("lose") or 0
+    total = win + lose
+    if total:
+        lines.append(f"\n📊 Матчей: <b>{_num(total)}</b> · винрейт "
+                     f"<b>{win / total * 100:.1f}%</b> "
+                     f"<i>({_num(win)} / {_num(lose)})</i>")
+    if p.get("hidden"):
+        lines.append("\n🔒 <i>Статистика матчей скрыта в настройках Dota 2 — "
+                     "включи «Общедоступные данные матчей».</i>")
+
+    if p.get("recent"):
+        lines.append("\n📈 <b>Последние матчи</b>")
+        for r in p["recent"][:4]:
+            mark = "✅" if r["won"] else "❌"
+            lines.append(f"{mark} {esc(r['hero'])} · "
+                         f"{r['k']}/{r['d']}/{r['a']} · {r['gpm']} GPM · "
+                         f"{_mmss(r['duration'])}")
+
+    if p.get("pool"):
+        lines.append("\n🧰 <b>Частые герои</b> <i>(последние матчи)</i>")
+        for r in p["pool"][:4]:
+            lines.append(f"  • {esc(r['hero'])} — {r['games']} "
+                         f"{_plural(r['games'], 'игра', 'игры', 'игр')} · "
+                         f"{r['winrate']:.0f}%")
+
+    if p.get("profile_url"):
+        lines.append(f"\n🔗 {p['profile_url']}")
+    return "\n".join(lines)
+
+
+def profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh"),
+         InlineKeyboardButton(text="✏️ Сменить ID", callback_data="profile:change")],
+        [InlineKeyboardButton(text="📈 Разбор матча", callback_data="profile:match")],
+    ])
+
+
+async def send_profile(bot: Bot, chat_id: int, account_id: int):
+    wait = await bot.send_message(chat_id, "⏳ Загружаю профиль...")
+    try:
+        p = await asyncio.to_thread(opendota.get_player, account_id)
+    except Exception:  # noqa: BLE001
+        log.exception("profile failed")
+        await wait.edit_text("😔 Не нашёл профиль. Проверь Steam ID и открой "
+                             "статистику матчей в настройках Dota 2.")
+        return
+
+    store.set_profile_id(chat_id, account_id)
+    text = format_profile(p)
+    kb = profile_keyboard()
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+
+    if p.get("avatar"):
+        try:
+            if len(text) <= 1024:
+                await bot.send_photo(chat_id, p["avatar"], caption=text,
+                                     reply_markup=kb)
+            else:
+                await bot.send_photo(chat_id, p["avatar"])
+                await bot.send_message(chat_id, text, reply_markup=kb,
+                                       disable_web_page_preview=True)
+            return
+        except Exception:  # noqa: BLE001
+            log.debug("avatar send failed", exc_info=True)
+    await bot.send_message(chat_id, text, reply_markup=kb,
+                           disable_web_page_preview=True)
+
+
+async def _ask_profile(m: Message, state: FSMContext):
+    await state.set_state(Profile.waiting)
+    await m.answer(PROFILE_PROMPT)
+
+
+# ---------------------------------------------------------------------------
+# Изменения героя в текущем патче
+# ---------------------------------------------------------------------------
+async def hero_changes(en: str) -> dict | None:
+    """Заметки текущего патча по герою (или None)."""
+    try:
+        hid = await asyncio.to_thread(opendota.hero_id, en)
+        if not hid:
+            return None
+        return await asyncio.to_thread(patch.hero_changes, hid)
+    except Exception:  # noqa: BLE001
+        log.debug("hero_changes failed", exc_info=True)
+        return None
+
+
+def format_changes(hero_en: str, changes: dict) -> str:
+    lines = [f"🩹 <b>{esc(hero_en)}</b> · патч <b>{esc(changes['version'])}</b>",
+             "<i>официальные заметки dota2.com</i>", ""]
+    used = sum(len(x) for x in lines)
+    shown = 0
+    current = None
+    for title, note in changes["items"]:
+        head = ""
+        if title != current:
+            head = f"\n<b>{esc(title or 'Изменения')}</b>"
+            current = title
+        piece = f"{head}\n  • {esc(note)}"
+        if used + len(piece) > 3800:
+            break
+        lines.append(piece)
+        used += len(piece)
+        shown += 1
+    rest = changes.get("total", 0) - shown
+    if rest > 0:
+        lines.append(f"\n<i>Показаны первые {shown} из "
+                     f"{changes['total']} изменений.</i>")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1100,6 +1305,18 @@ async def on_counter(m: Message, state: FSMContext):
     await run_counter(m, m.text or "")
 
 
+@router.message(F.text, Profile.waiting)
+async def on_profile(m: Message, state: FSMContext):
+    acc = opendota.normalize_account(m.text)
+    if not acc:
+        await m.answer("🤔 Нужен числовой ID: 17 цифр (SteamID64) или "
+                       "9–10 цифр (ID друга из Dota).\n"
+                       "Например: <code>76561198030654385</code>")
+        return
+    await state.clear()
+    await send_profile(m.bot, m.chat.id, acc)
+
+
 @router.callback_query(F.data.startswith("fav:"))
 async def cb_fav(cq: CallbackQuery):
     payload = cq.data.split(":", 1)[1]
@@ -1119,12 +1336,10 @@ async def cb_favclear(cq: CallbackQuery):
     for slug in store.favorites(cq.message.chat.id):
         store.remove_favorite(cq.message.chat.id, slug)
     await cq.answer("Избранное очищено")
-    try:
-        await cq.message.edit_text("⭐ <b>Избранное пусто</b>\n\n"
-                                   "Открой героя и нажми «⭐ В избранное».")
-    except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id,
-                                  "⭐ <b>Избранное пусто</b>")
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    await cq.bot.send_message(chat_id, "⭐ <b>Избранное пусто</b>\n\n"
+                              "Открой героя и нажми «⭐ В избранное».")
 
 
 @router.callback_query(F.data.startswith("meta:"))
@@ -1135,19 +1350,16 @@ async def cb_meta(cq: CallbackQuery):
         await cq.answer("Некорректный ранг")
         return
     await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    msg = await cq.bot.send_message(chat_id, "⏳ Считаю мету…")
     try:
         meta = await asyncio.to_thread(opendota.get_meta, key)
     except Exception:  # noqa: BLE001
         log.exception("meta bracket failed")
-        await cq.bot.send_message(cq.message.chat.id,
-                                  "😔 Нет данных по этому рангу, попробуй другой.")
+        await msg.edit_text("😔 Нет данных по этому рангу, попробуй другой.")
         return
-    try:
-        await cq.message.edit_text(format_meta(meta),
-                                   reply_markup=meta_keyboard(key))
-    except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id, format_meta(meta),
-                                  reply_markup=meta_keyboard(key))
+    await msg.edit_text(format_meta(meta), reply_markup=meta_keyboard(key))
 
 
 @router.callback_query(F.data.startswith("mself:"))
@@ -1165,17 +1377,14 @@ async def cb_match_self(cq: CallbackQuery):
         await cq.answer("Не удалось загрузить матч", show_alert=True)
         return
     await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
     back = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="⬅️ К сводке матча",
                              callback_data=f"mmatch:{mid}")]])
-    try:
-        await cq.message.edit_text(format_personal(data, slot),
-                                   reply_markup=back,
-                                   disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id, format_personal(data, slot),
-                                  reply_markup=back,
-                                  disable_web_page_preview=True)
+    await cq.bot.send_message(chat_id, format_personal(data, slot),
+                              reply_markup=back,
+                              disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("mmatch:"))
@@ -1192,14 +1401,11 @@ async def cb_match_summary(cq: CallbackQuery):
         await cq.answer("Не удалось загрузить матч", show_alert=True)
         return
     await cq.answer()
-    try:
-        await cq.message.edit_text(format_match(data),
-                                   reply_markup=match_keyboard(data),
-                                   disable_web_page_preview=True)
-    except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id, format_match(data),
-                                  reply_markup=match_keyboard(data),
-                                  disable_web_page_preview=True)
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    await cq.bot.send_message(chat_id, format_match(data),
+                              reply_markup=match_keyboard(data),
+                              disable_web_page_preview=True)
 
 
 @router.message(F.text)
@@ -1224,60 +1430,154 @@ async def fallback_text(m: Message):
 
 
 async def show_hero(m_or_cq, h: dict):
-    """m_or_cq: Message (ответ) или CallbackQuery (edit)."""
+    """m_or_cq: Message (ответ) или CallbackQuery (заменяем старый экран)."""
+    chat_id = (m_or_cq.chat.id if isinstance(m_or_cq, Message)
+               else m_or_cq.message.chat.id)
     if isinstance(m_or_cq, Message):
         wait = await m_or_cq.answer("⏳ Собираю данные с dotabuff...")
-        try:
-            data = await asyncio.to_thread(dotabuff.get_hero_overview, h["slug"])
-        except Exception as e:  # noqa: BLE001
-            log.exception("hero overview failed")
-            await wait.edit_text("😔 Не удалось получить данные с dotabuff, попробуй позже.")
-            return
-        en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
-        await wait.edit_text(format_hero_card(data),
-                             reply_markup=hero_card_keyboard(
-                                 h["slug"], en, store.is_favorite(m_or_cq.chat.id, h["slug"])),
-                             disable_web_page_preview=True)
     else:
-        cq = m_or_cq
-        await cq.answer()
-        msg = await cq.bot.send_message(cq.message.chat.id, "⏳ Собираю данные с dotabuff...")
+        await m_or_cq.answer()
+        wait = await m_or_cq.bot.send_message(
+            chat_id, "⏳ Собираю данные с dotabuff...")
+
+    try:
+        data = await asyncio.to_thread(dotabuff.get_hero_overview, h["slug"])
+    except Exception:  # noqa: BLE001
+        log.exception("hero overview failed")
+        await wait.edit_text("😔 Не удалось получить данные с dotabuff, попробуй позже.")
+        return
+
+    en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
+    changes = await hero_changes(en)
+    fav = store.is_favorite(chat_id, h["slug"])
+    text = format_hero_card(data, changes)
+    kb = hero_card_keyboard(h["slug"], en, fav)
+
+    if isinstance(m_or_cq, Message):
         try:
-            data = await asyncio.to_thread(dotabuff.get_hero_overview, h["slug"])
+            await wait.edit_text(text, reply_markup=kb,
+                                 disable_web_page_preview=True)
         except Exception:  # noqa: BLE001
-            log.exception("hero overview failed")
-            await msg.edit_text("😔 Не удалось получить данные с dotabuff, попробуй позже.")
-            return
-        en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
-        await msg.delete()
-        fav = store.is_favorite(cq.message.chat.id, h["slug"])
-        try:
-            await cq.message.edit_text(format_hero_card(data),
-                                       reply_markup=hero_card_keyboard(h["slug"], en, fav),
-                                       disable_web_page_preview=True)
-        except Exception as e:  # noqa: BLE001
-            if "not modified" in str(e):
-                await cq.answer("Данные актуальны ✅")
-            else:
-                # сообщение-источник может быть фото (сетка героев) —
-                # тогда просто отправляем карточку новым сообщением
-                await cq.bot.send_message(cq.message.chat.id,
-                                          format_hero_card(data),
-                                          reply_markup=hero_card_keyboard(h["slug"], en, fav),
-                                          disable_web_page_preview=True)
+            await wait.answer(text, reply_markup=kb,
+                              disable_web_page_preview=True)
+        return
+
+    # замена экрана: убираем «часики» и сообщение, на котором нажали кнопку
+    try:
+        await wait.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await _swap(m_or_cq)
+    await m_or_cq.bot.send_message(chat_id, text, reply_markup=kb,
+                                   disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "daily")
 async def cb_daily(cq: CallbackQuery):
     await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
     await send_daily(cq.message)
+    # send_daily отвечает на удалённое сообщение — это нормально, ответ уходит в чат
+
+
+@router.callback_query(F.data.startswith("poster:"))
+async def cb_poster(cq: CallbackQuery):
+    slug = cq.data.split(":", 1)[1]
+    await cq.answer("🖼 Собираю постер…")
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    msg = await cq.bot.send_message(chat_id, "⏳ Собираю постер...")
+    try:
+        data = await asyncio.to_thread(dotabuff.get_hero_overview, slug)
+        num = (patch.current().get("number") or "").strip()
+        subtitle = f"ПАТЧ {num}" if num and num != "—" else ""
+        out = str(Path(__file__).with_name(f"_poster_{slug}.png"))
+        await asyncio.to_thread(items_img.build_hero_poster, data, out, subtitle)
+    except Exception:  # noqa: BLE001
+        log.exception("poster failed")
+        await msg.edit_text("😔 Не удалось собрать постер, попробуй позже.")
+        return
+    try:
+        await msg.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    await cq.bot.send_photo(
+        chat_id, FSInputFile(out),
+        caption=f"🖼 <b>{esc(data.get('en') or slug)}</b> · постер для шаринга",
+        reply_markup=back_to_hero_kb(slug))
+    try:
+        Path(out).unlink()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.callback_query(F.data.startswith("changes:"))
+async def cb_changes(cq: CallbackQuery):
+    slug = cq.data.split(":", 1)[1]
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    en = slug.replace("-", " ").title()
+    try:
+        for h in await fetch_heroes():
+            if h["slug"] == slug:
+                en = h["en"]
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    await _swap(cq)
+    msg = await cq.bot.send_message(chat_id, "⏳ Ищу изменения в патче...")
+    changes = await hero_changes(en)
+    if not changes:
+        num = (patch.current().get("number") or "").strip()
+        await msg.edit_text(
+            f"🩹 <b>{esc(en)}</b>\n\n"
+            f"<i>В патче {esc(num or '')} герой не менялся.</i>",
+            reply_markup=back_to_hero_kb(slug))
+        return
+    await msg.edit_text(format_changes(en, changes),
+                        reply_markup=back_to_hero_kb(slug),
+                        disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "profile:refresh")
+async def cb_profile_refresh(cq: CallbackQuery):
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    acc = store.profile_id(chat_id)
+    await _swap(cq)
+    if not acc:
+        await cq.bot.send_message(chat_id, PROFILE_PROMPT)
+        return
+    await send_profile(cq.bot, chat_id, int(acc))
+
+
+@router.callback_query(F.data == "profile:change")
+async def cb_profile_change(cq: CallbackQuery, state: FSMContext):
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    store.clear_profile_id(chat_id)
+    await _swap(cq)
+    await state.set_state(Profile.waiting)
+    await cq.bot.send_message(chat_id, PROFILE_PROMPT)
+
+
+@router.callback_query(F.data == "profile:match")
+async def cb_profile_match(cq: CallbackQuery, state: FSMContext):
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    await state.set_state(Match.waiting)
+    await cq.bot.send_message(chat_id, MATCH_PROMPT)
 
 
 @router.callback_query(F.data == "counter")
 async def cb_counter(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
     await state.set_state(Counter.waiting)
-    await cq.bot.send_message(cq.message.chat.id, COUNTER_PROMPT)
+    await cq.bot.send_message(chat_id, COUNTER_PROMPT)
 
 
 @router.callback_query(F.data == "noop")
@@ -1288,9 +1588,11 @@ async def cb_noop(cq: CallbackQuery):
 @router.callback_query(F.data == "search")
 async def cb_search(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
+    chat_id = cq.message.chat.id
+    await _swap(cq)
     await state.set_state(Search.waiting)
     await cq.bot.send_message(
-        cq.message.chat.id,
+        chat_id,
         "✍️ Напиши имя героя (по-русски или по-английски):\n"
         "например: <i>пудж</i>, <i>па</i>, <i>invoker</i>",
     )
@@ -1300,7 +1602,9 @@ async def cb_search(cq: CallbackQuery, state: FSMContext):
 async def cb_page(cq: CallbackQuery):
     page = int(cq.data.split(":")[1])
     await cq.answer()
-    await send_hero_list(cq.message.chat.id, page, cq.bot, message=cq.message)
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    await send_hero_list(chat_id, page, cq.bot)
 
 
 @router.callback_query(F.data.startswith("hero:"))
@@ -1318,7 +1622,9 @@ async def cb_pos(cq: CallbackQuery):
         await cq.answer("Неизвестная позиция")
         return
     await cq.answer()
-    msg = await cq.bot.send_message(cq.message.chat.id, "⏳ Загружаю про-билд с D2PT...")
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    msg = await cq.bot.send_message(chat_id, "⏳ Загружаю про-билд с D2PT...")
     slug = await find_slug(en)
     back_kb = back_to_hero_kb(slug)
     try:
@@ -1336,19 +1642,19 @@ async def cb_pos(cq: CallbackQuery):
         await msg.edit_text(text, reply_markup=back_kb,
                             disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
-        await cq.bot.send_message(cq.message.chat.id, text, reply_markup=back_kb,
+        await cq.bot.send_message(chat_id, text, reply_markup=back_kb,
                                   disable_web_page_preview=True)
 
     # иконки предметов компактной картинкой (старт / кор с таймингами / финал)
     if pos != "all":
         try:
             grid_path = str(Path(__file__).with_name(
-                f"_items_{cq.message.chat.id}_{abs(hash(en)) % 100000}_{pos}.png"))
+                f"_items_{chat_id}_{abs(hash(en)) % 100000}_{pos}.png"))
             grid = await asyncio.to_thread(items_img.build_items_image,
                                            data, pos, grid_path)
             if grid:
                 await cq.bot.send_photo(
-                    cq.message.chat.id, FSInputFile(grid),
+                    chat_id, FSInputFile(grid),
                     caption=f"🛠 Предметы · {en} · {d2pt.POS_TITLES.get(pos, pos)}")
         except Exception:  # noqa: BLE001
             log.exception("items image failed")
@@ -1358,7 +1664,9 @@ async def cb_pos(cq: CallbackQuery):
 async def cb_dbguide(cq: CallbackQuery):
     slug = cq.data.split(":", 1)[1]
     await cq.answer()
-    msg = await cq.bot.send_message(cq.message.chat.id, "⏳ Загружаю гайды с dotabuff...")
+    chat_id = cq.message.chat.id
+    await _swap(cq)
+    msg = await cq.bot.send_message(chat_id, "⏳ Загружаю гайды с dotabuff...")
     try:
         guides = await asyncio.to_thread(dotabuff.get_guides, slug)
         hero = {"en": slug.replace("-", " ").title(), "slug": slug}

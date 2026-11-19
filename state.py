@@ -84,3 +84,23 @@ def remove_favorite(chat_id, slug: str) -> None:
         if slug in lst:
             lst.remove(slug)
             _save()
+
+
+def profile_id(chat_id):
+    """Сохранённый account_id игрока для этого чата (или None)."""
+    with _lock:
+        return (_load().get("profiles") or {}).get(str(chat_id))
+
+
+def set_profile_id(chat_id, account_id) -> None:
+    with _lock:
+        _load().setdefault("profiles", {})[str(chat_id)] = int(account_id)
+        _save()
+
+
+def clear_profile_id(chat_id) -> None:
+    with _lock:
+        prof = _load().get("profiles") or {}
+        if str(chat_id) in prof:
+            prof.pop(str(chat_id))
+            _save()
