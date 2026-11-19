@@ -2,8 +2,9 @@ name: dota-bot
 
 on:
   schedule:
+    # каждые 6 часов (GitHub может запускать с задержкой несколько минут)
     - cron: "0 */6 * * *"
-  workflow_dispatch:
+  workflow_dispatch:      # кнопка ручного запуска
 
 concurrency:
   group: dota-bot
@@ -26,7 +27,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # избранное героев переживает перезапуск: кладём data/state.json в кеш
+      - name: Восстановить избранное
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: bot-state-${{ github.run_id }}
+          restore-keys: |
+            bot-state-
+
       - name: Запуск бота (5 ч 50 мин)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        # timeout завершит процесс до лимита GitHub в 6 часов
         run: timeout 21000 python -u bot.py || echo "остановлен по таймауту"
+
+      - name: Сохранить избранное
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: bot-state-${{ github.run_id }}
