@@ -13,10 +13,12 @@ Telegram-бот со сборками по Dota 2 на основе dotabuff.com
   3) python bot.py
 """
 import asyncio
+import hashlib
 import html
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import sys
@@ -44,6 +46,12 @@ import state as store
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("dota-bot")
+
+
+def esc(value) -> str:
+    """Экранирование для Telegram HTML: без &#x27; — Bot API их не понимает."""
+    return html.escape(str(value), quote=False)
+
 
 # ----------------------------------------------------------------------------
 # Токен: окружение BOT_TOKEN или файл token.txt рядом с ботом
@@ -155,6 +163,8 @@ def hero_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Список героев", callback_data="page:0")],
         [InlineKeyboardButton(text="✍️ Поиск героя", callback_data="search")],
+        [InlineKeyboardButton(text="🎲 Герой дня", callback_data="daily"),
+         InlineKeyboardButton(text="⚔️ Контр-пик", callback_data="counter")],
     ])
 
 
@@ -163,6 +173,8 @@ MENU_HOME = "🏠 Главное меню"
 MENU_PICK = "🛡 Выбрать героя"
 MENU_FIND = "✍️ Поиск героя"
 MENU_META = "📊 Мета патча"
+MENU_COUNTER = "⚔️ Контр-пик"
+MENU_DAILY = "🎲 Герой дня"
 MENU_FAVS = "⭐ Избранное"
 MENU_MATCH = "📈 Разбор матча"
 
@@ -171,7 +183,8 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_PICK), KeyboardButton(text=MENU_FIND)],
-            [KeyboardButton(text=MENU_META), KeyboardButton(text=MENU_FAVS)],
+            [KeyboardButton(text=MENU_META), KeyboardButton(text=MENU_COUNTER)],
+            [KeyboardButton(text=MENU_DAILY), KeyboardButton(text=MENU_FAVS)],
             [KeyboardButton(text=MENU_MATCH), KeyboardButton(text=MENU_HOME)],
         ],
         resize_keyboard=True,
@@ -227,30 +240,30 @@ def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardM
 
 def format_hero_card(h: dict) -> str:
     ru = h["en"]
-    lines = [f"🛡 <b>{html.escape(ru)}</b>"]
+    lines = [f"🛡 <b>{esc(ru)}</b>"]
     if h.get("source") == "opendota":
         lines.append("<i>источник: OpenDota API</i>")
     if h.get("attrs"):
-        lines.append("🏷 " + " · ".join(html.escape(a) for a in h["attrs"]))
+        lines.append("🏷 " + " · ".join(esc(a) for a in h["attrs"]))
     if h.get("winrate"):
         lines.append(f"📈 Популярный герой · Винрейт: <b>{h['winrate']}</b>")
 
     if h["lanes"]:
         lines.append("\n🛣 <b>Lane stats</b> (presence / win rate):")
         for l in h["lanes"]:
-            lines.append(f"  • {html.escape(l['lane'])}: {l['presence']} / {l['winrate']}")
+            lines.append(f"  • {esc(l['lane'])}: {l['presence']} / {l['winrate']}")
 
     if h["items"]:
         lines.append("\n🧰 <b>Самые частые предметы</b> (за неделю):")
         lines.append(", ".join(
-            f"{html.escape(i['name'])} ({i['winrate']})" for i in h["items"]))
+            f"{esc(i['name'])} ({i['winrate']})" for i in h["items"]))
 
     if h["best_vs"]:
         lines.append("\n🟢 <b>Силён против:</b> " + ", ".join(
-            f"{html.escape(v['hero'])} ({v['adv']})" for v in h["best_vs"]))
+            f"{esc(v['hero'])} ({v['adv']})" for v in h["best_vs"]))
     if h["worst_vs"]:
         lines.append("\n🔴 <b>Слаб против:</b> " + ", ".join(
-            f"{html.escape(v['hero'])} ({v['adv']})" for v in h["worst_vs"]))
+            f"{esc(v['hero'])} ({v['adv']})" for v in h["worst_vs"]))
 
     lines.append(f"\n🔗 {dotabuff.BASE}/heroes/{h['slug']}")
     return "\n".join(lines)
@@ -258,7 +271,7 @@ def format_hero_card(h: dict) -> str:
 
 def format_guides(h: dict, role: str, guides: list[dict]) -> str:
     title = dotabuff.ROLE_TITLES[role]
-    lines = [f"📖 <b>Guides · {html.escape(h['en'])} · {html.escape(title)}</b>",
+    lines = [f"📖 <b>Guides · {esc(h['en'])} · {esc(title)}</b>",
              "Топ-выступления недели на dotabuff:", ""]
 
     if not guides:
@@ -268,17 +281,17 @@ def format_guides(h: dict, role: str, guides: list[dict]) -> str:
 
     for i, g in enumerate(guides, 1):
         res = "✅ Победа" if g["won"] else "❌ Поражение"
-        lines.append(f"<b>{i}. {html.escape(g['lane'])} · {g['duration']} · {res}</b>")
-        lines.append(f"👤 {html.escape(g['player'])} · {g['side']} · ~{g['mmr']} MMR · {g['date']}")
+        lines.append(f"<b>{i}. {esc(g['lane'])} · {g['duration']} · {res}</b>")
+        lines.append(f"👤 {esc(g['player'])} · {g['side']} · ~{g['mmr']} MMR · {g['date']}")
         if g["starting"]:
-            lines.append("🎒 Старт: " + ", ".join(html.escape(x) for x in g["starting"]))
+            lines.append("🎒 Старт: " + ", ".join(esc(x) for x in g["starting"]))
         if g["build"]:
-            build = " → ".join(f"{html.escape(b['item'])} ({b['time']})" for b in g["build"])
+            build = " → ".join(f"{esc(b['item'])} ({b['time']})" for b in g["build"])
             lines.append("📦 Билд: " + build)
         if g["abilities"]:
             order = " → ".join(
-                ("⭐ " + html.escape(a["ability"])) if a["ability"].lower().startswith("talent")
-                else html.escape(a["ability"])
+                ("⭐ " + esc(a["ability"])) if a["ability"].lower().startswith("talent")
+                else esc(a["ability"])
                 for a in g["abilities"][:17])
             lines.append("⚡ Прокачка: " + order)
         if g["match_id"]:
@@ -298,60 +311,289 @@ class Match(StatesGroup):
     waiting = State()
 
 
+class Counter(StatesGroup):
+    waiting = State()
+
+
 def format_meta(meta: dict) -> str:
     lines = ["📊 <b>Мета патча</b>"]
     badge = patch.badge()
     if badge:
         lines.append(badge)
+
+    name = meta.get("bracket_name") or "Все ранги"
+    mmr = meta.get("mmr") or ""
+    matches = meta.get("matches") or 0
+    head = f"🏅 <b>{esc(name)}</b>"
+    if mmr:
+        head += f" · ≈{mmr} MMR"
+    head += f" · {_num(matches)} матчей"
+    lines.append(head)
     lines.append("<i>публичные матчи · OpenDota</i>")
 
     lines.append("\n🏆 <b>Топ по винрейту</b>:")
     for i, r in enumerate(meta["by_winrate"], 1):
-        lines.append(f"{i}. <b>{html.escape(r['hero'])}</b> — "
+        lines.append(f"{i}. <b>{esc(r['hero'])}</b> — "
                      f"{r['winrate']:.1f}% · {r['pickrate']:.1f}% пиков")
 
     lines.append("\n🔥 <b>Топ по популярности</b>:")
     for i, r in enumerate(meta["by_pick"], 1):
-        lines.append(f"{i}. <b>{html.escape(r['hero'])}</b> — "
+        lines.append(f"{i}. <b>{esc(r['hero'])}</b> — "
                      f"{r['pickrate']:.1f}% пиков · {r['winrate']:.1f}%")
+
+    lines.append("\n<i>Выбери свой ранг кнопками ниже 👇</i>")
     return "\n".join(lines)
+
+
+def _num(v: int) -> str:
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"{v / 1_000:.0f}k"
+    return str(v)
+
+
+def meta_keyboard(current: int) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        text=("✅ " if current == 0 else "") + "🌐 Все ранги",
+        callback_data="meta:0")]]
+    keys = [k for k in sorted(opendota.BRACKETS) if k != 0]
+    for i in range(0, len(keys), 2):
+        row = []
+        for k in keys[i:i + 2]:
+            b = opendota.BRACKETS[k]
+            mark = "✅ " if current == k else ""
+            row.append(InlineKeyboardButton(
+                text=f"{mark}{b['name']} · {b['mmr']}",
+                callback_data=f"meta:{k}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 MATCH_PROMPT = ("📈 Пришли номер матча — только цифры.\n"
                 "Его видно в конце ссылки: dotabuff.com/matches/<b>8123456789</b>")
 
 
-async def show_match(m: Message, digits: str) -> None:
-    """Разбор матча по номеру (цифры строкой)."""
-    wait = await m.answer("⏳ Разбираю матч...")
-    try:
-        data = await asyncio.to_thread(opendota.get_match, int(digits))
-    except Exception:  # noqa: BLE001
-        log.exception("match failed")
-        await wait.edit_text("😔 Матч не найден или OpenDota ещё не разобрал его. "
-                             "Попробуй другой ID.")
-        return
-    await wait.edit_text(format_match(data), disable_web_page_preview=True)
+def _mmss(sec: int) -> str:
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+def _k(v: int) -> str:
+    return f"{v / 1000:.1f}k" if v >= 1000 else str(v)
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    n10, n100 = abs(n) % 10, abs(n) % 100
+    if n10 == 1 and n100 != 11:
+        return one
+    if 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        return few
+    return many
+
+
+def _bar(pct: float) -> str:
+    n = max(0, min(10, round(pct * 10)))
+    return "▰" * n + "▱" * (10 - n)
+
+
+def match_keyboard(m: dict) -> InlineKeyboardMarkup:
+    rows, cur = [], []
+    for p in m["players"]:
+        cur.append(InlineKeyboardButton(text=p["hero"],
+                                        callback_data=f"mself:{m['id']}:{p['slot']}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def format_match(m: dict) -> str:
-    dur = f"{m['duration'] // 60}:{m['duration'] % 60:02d}"
+    r_kills, d_kills = m["score"]
     winner = "🟢 Radiant" if m["radiant_win"] else "🔴 Dire"
-    lines = [f"📈 <b>Матч {m['id']}</b>",
-             f"🕒 {dur} · Победа: <b>{winner}</b>"]
+    lines = [f"📈 <b>Матч {m['id']}</b> · {_mmss(m['duration'])}",
+             f"🏆 <b>{winner}</b> побеждает · счёт <b>{r_kills}:{d_kills}</b>"]
+
+    extra = []
+    if m.get("first_blood"):
+        extra.append(f"🩸 первая кровь {_mmss(m['first_blood'])}")
+    ob = m.get("objectives")
+    if ob:
+        extra.append(f"🏰 башни {ob['towers'][0]}:{ob['towers'][1]}")
+        if ob["roshan"][0] or ob["roshan"][1]:
+            extra.append(f"🐉 Рошан {ob['roshan'][0]}:{ob['roshan'][1]}")
+    if extra:
+        lines.append(" · ".join(extra))
 
     for side, title in ((True, "🟢 <b>Radiant</b>"), (False, "🔴 <b>Dire</b>")):
         players = [p for p in m["players"] if p["radiant"] == side]
         if not players:
             continue
+        t = m["totals"][side]
+        kills = m["score"][0 if side else 1]
         lines.append("")
-        lines.append(title)
+        lines.append(f"{title} · {kills} {_plural(kills, 'килл', 'килла', 'киллов')} · "
+                     f"{_k(t['dmg'])} урона · {_k(t['net'])} нетворса")
         for p in players:
-            lines.append(
-                f"• {html.escape(p['hero'])} — {p['k']}/{p['d']}/{p['a']} · "
-                f"GPM {p['gpm']} · NW {p['net'] // 1000}k · ур.{p['level']}")
+            lines.append(f"• <b>{esc(p['hero'])}</b> — "
+                         f"{p['k']}/{p['d']}/{p['a']} · {p['gpm']} GPM · "
+                         f"{_k(p['dmg'])} dmg · {p['lh']} LH")
+
+    g = m.get("gold")
+    if g and abs(g["peak"]) >= 1000:
+        who = "Radiant" if g["peak"] >= 0 else "Dire"
+        lines.append(f"\n💰 Максимальный перевес: <b>{who} +{_k(abs(g['peak']))}</b> "
+                     f"на {g['peak_min']}-й минуте")
+        if abs(g["swing"]) >= 3000:
+            sw = "Radiant" if g["swing"] > 0 else "Dire"
+            lines.append(f"📈 Рывок: <b>{sw} +{_k(abs(g['swing']))}</b> за минуту "
+                         f"на {max(1, g['swing_min'])}-й")
+
+    f = m.get("fight")
+    if f:
+        lines.append(f"⚔️ Крупнейший файт: {_mmss(f['start'])} · {f['deaths']} "
+                     f"{_plural(f['deaths'], 'смерть', 'смерти', 'смертей')} · "
+                     f"{_k(f['radiant_dmg'] + f['dire_dmg'])} урона")
+
+    if m.get("mvp"):
+        lines.append(f"⭐ <b>MVP: {esc(m['mvp']['hero'])}</b>")
+
+    if not m.get("parsed"):
+        lines.append("\n<i>ℹ️ Матч ещё не распарсен OpenDota: башни, файты и таймлайн "
+                     "появятся позже. Перцентили игроков уже работают.</i>")
+
+    lines.append(f"\n🔗 https://www.dotabuff.com/matches/{m['id']}")
+    lines.append("<i>Нажми на своего героя — покажу перцентили и что улучшить.</i>")
+    return "\n".join(lines)
+
+
+_METRICS = (
+    ("gold_per_min", "GPM", "{:.0f}"),
+    ("xp_per_min", "XPM", "{:.0f}"),
+    ("last_hits_per_min", "Добивания/мин", "{:.1f}"),
+    ("hero_damage_per_min", "Урон по героям/мин", "{:.0f}"),
+    ("tower_damage", "Урон по строениям", "{:.0f}"),
+)
+
+
+def format_personal(m: dict, slot) -> str:
+    p = next((x for x in m["players"] if str(x["slot"]) == str(slot)), None)
+    if not p:
+        return "🤔 Не нашёл этого игрока в матче."
+    side = "🟢 Radiant" if p["radiant"] else "🔴 Dire"
+    team_kills = m["totals"][p["radiant"]]["kills"] or 1
+    part = (p["k"] + p["a"]) / team_kills * 100
+    rank = p.get("net_rank", "?")
+
+    lines = [f"🧠 <b>{esc(p['hero'])}</b> · {side} · матч {m['id']}",
+             f"{p['k']}/{p['d']}/{p['a']} · {_k(p['net'])} нетворса ({rank}-й в команде) · "
+             f"участие в убийствах {part:.0f}%"]
+
+    if p.get("items"):
+        lines.append("🎒 " + ", ".join(esc(i["name"]) for i in p["items"]))
+
+    b = p.get("benchmarks") or {}
+
+    def pct(key: str) -> float:
+        return float((b.get(key) or {}).get("pct") or 0)
+
+    if b:
+        lines.append("\n📊 <b>Перцентили на герое</b> <i>(100% — лучше всех)</i>:")
+        for key, label, fmt in _METRICS:
+            v = b.get(key)
+            if not v:
+                continue
+            pr = float(v.get("pct") or 0)
+            lines.append(f"{_bar(pr)} {pr * 100:.0f}% · {label} "
+                         f"{fmt.format(float(v.get('raw') or 0))}")
+        d = b.get("deaths_per_min")
+        if d:
+            pr = float(d.get("pct") or 0)
+            lines.append(f"{_bar(pr)} {pr * 100:.0f}% · Выживаемость "
+                         f"({p['d']} {_plural(p['d'], 'смерть', 'смерти', 'смертей')})")
+
+        hints = []
+        if pct("deaths_per_min") <= 0.3:
+            hints.append(f"❌ {p['d']} {_plural(p['d'], 'смерть', 'смерти', 'смертей')} — "
+                         f"чаще, чем у {(1 - pct('deaths_per_min')) * 100:.0f}% "
+                         f"игроков на герое. Чаще смотри карту и не дерись без ульты.")
+        elif pct("deaths_per_min") >= 0.7:
+            hints.append(f"✅ {p['d']} {_plural(p['d'], 'смерть', 'смерти', 'смертей')} — "
+                         f"реже, чем у {pct('deaths_per_min') * 100:.0f}% игроков.")
+        if rank != "?" and rank <= 3 and pct("last_hits_per_min") < 0.4:
+            lines_min = m["duration"] / 60 or 1
+            hints.append(f"⚠️ Мало добиваний для кора: {p['lh']} "
+                         f"({p['lh'] / lines_min:.1f}/мин).")
+        if pct("hero_damage_per_min") >= 0.8:
+            hints.append(f"✅ Урон по героям выше, чем у "
+                         f"{pct('hero_damage_per_min') * 100:.0f}% игроков.")
+        elif pct("hero_damage_per_min") and pct("hero_damage_per_min") <= 0.3:
+            hints.append("⚠️ Мало урона по героям — чаще участвуй в файтах.")
+        if pct("gold_per_min") and pct("gold_per_min") <= 0.3:
+            hints.append("⚠️ Мало золота: пропускай меньше волн и фарми безопаснее.")
+        if p.get("tower", 0) >= 3000:
+            hints.append(f"✅ Хорошо ломал строения: {_k(p['tower'])} урона.")
+        if p.get("obs") is None:
+            hints.append("ℹ️ Варды/стаки недоступны — матч не распарсен.")
+        if hints:
+            lines.append("\n💡 <b>Что улучшить</b>:")
+            lines.extend(hints[:4])
+    else:
+        lines.append("\n<i>Перцентилей нет — OpenDota не отдал статистику по герою.</i>")
+
     lines.append(f"\n🔗 https://www.dotabuff.com/matches/{m['id']}")
     return "\n".join(lines)
+
+
+_MATCH_CACHE: dict = {}
+
+
+def _cache_match(m: dict) -> dict:
+    """Кеш последних матчей, чтобы кнопки «мой герой» не дёргали API заново."""
+    _MATCH_CACHE[m["id"]] = (time.time(), m)
+    if len(_MATCH_CACHE) > 8:
+        oldest = min(_MATCH_CACHE, key=lambda k: _MATCH_CACHE[k][0])
+        _MATCH_CACHE.pop(oldest, None)
+    return m
+
+
+async def _get_match(match_id: int) -> dict:
+    hit = _MATCH_CACHE.get(match_id)
+    if hit and time.time() - hit[0] < 1800:
+        return hit[1]
+    data = await asyncio.to_thread(opendota.get_match, match_id)
+    return _cache_match(data)
+
+
+async def show_match(m: Message, digits: str) -> None:
+    """Разбор матча по номеру (цифры строкой)."""
+    wait = await m.answer("⏳ Разбираю матч...")
+    try:
+        data = await _get_match(int(digits))
+    except Exception:  # noqa: BLE001
+        log.exception("match failed")
+        await wait.edit_text("😔 Матч не найден или OpenDota ещё не разобрал его. "
+                             "Попробуй другой ID.")
+        return
+    try:
+        await wait.edit_text(format_match(data),
+                             reply_markup=match_keyboard(data),
+                             disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await m.answer(format_match(data), reply_markup=match_keyboard(data),
+                       disable_web_page_preview=True)
+
+    # итоговые сборки всех 10 игроков — картинкой
+    try:
+        out = Path(__file__).with_name(f"_match_{data['id']}.png")
+        path = await asyncio.to_thread(items_img.build_match_image,
+                                       data, str(out))
+        if path:
+            await m.answer_photo(FSInputFile(path),
+                                 caption=f"🎒 Финальные сборки · матч {data['id']}")
+    except Exception:  # noqa: BLE001
+        log.warning("match image failed", exc_info=True)
 
 
 
@@ -440,13 +682,16 @@ START_TEXT = (
     "\n"
     "🛡 <b>Выбрать героя</b> — портреты и статистика\n"
     "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
-    "📊 <b>Мета патча</b> · ⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b>\n"
-    "🏠 <b>Главное меню</b> — этот экран\n"
+    "📊 <b>Мета по MMR</b> · ⚔️ <b>Контр-пик</b> · 🎲 <b>Герой дня</b>\n"
+    "⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b> · 🏠 <b>Главное меню</b>\n"
     "\n"
     "<blockquote>📊 Карточка героя с dotabuff · про-билды <b>Pos 1–5</b> ·"
     " иконки предметов · тайминги закупа · таланты</blockquote>\n"
     "\n"
     "<b>Выбери героя кнопкой ниже</b> 👇"
+    "\n\n"
+    "<i>Данные: OpenDota · Dotabuff · изображения: Valve. "
+    "Фан-проект, не связан с Valve.</i>"
 )
 
 # --- таймер до перезапуска --------------------------------------------------
@@ -608,9 +853,26 @@ async def cmd_favs(m: Message, state: FSMContext):
     await send_favorites(m)
 
 
+@router.message(Command("daily"))
+async def cmd_daily(m: Message, state: FSMContext):
+    await state.clear()
+    await send_daily(m)
+
+
+@router.message(Command("counter"))
+async def cmd_counter(m: Message, state: FSMContext):
+    await state.clear()
+    tail = (m.text or "").partition(" ")[2].strip()
+    if tail:
+        await run_counter(m, tail)
+        return
+    await state.set_state(Counter.waiting)
+    await m.answer(COUNTER_PROMPT)
+
+
 # кнопки нижнего меню (регистрируется до поиска, чтобы работали в любом состоянии)
-@router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND,
-                            MENU_META, MENU_FAVS, MENU_MATCH}))
+@router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND, MENU_META,
+                            MENU_COUNTER, MENU_DAILY, MENU_FAVS, MENU_MATCH}))
 async def on_menu_button(m: Message, state: FSMContext):
     await state.clear()
     if m.text == MENU_PICK:
@@ -621,6 +883,11 @@ async def on_menu_button(m: Message, state: FSMContext):
                        "например: <i>пудж</i>, <i>па</i>, <i>tinker</i>")
     elif m.text == MENU_META:
         await send_meta(m)
+    elif m.text == MENU_COUNTER:
+        await state.set_state(Counter.waiting)
+        await m.answer(COUNTER_PROMPT)
+    elif m.text == MENU_DAILY:
+        await send_daily(m)
     elif m.text == MENU_FAVS:
         await send_favorites(m)
     elif m.text == MENU_MATCH:
@@ -630,15 +897,15 @@ async def on_menu_button(m: Message, state: FSMContext):
         await send_start(m)
 
 
-async def send_meta(m: Message):
+async def send_meta(m: Message, bracket: int = 0):
     wait = await m.answer("⏳ Собираю мету патча...")
     try:
-        meta = await asyncio.to_thread(opendota.get_meta)
+        meta = await asyncio.to_thread(opendota.get_meta, bracket)
     except Exception:  # noqa: BLE001
         log.exception("meta failed")
         await wait.edit_text("😔 Не удалось получить мету, попробуй позже.")
         return
-    await wait.edit_text(format_meta(meta))
+    await wait.edit_text(format_meta(meta), reply_markup=meta_keyboard(bracket))
 
 
 async def send_favorites(m: Message):
@@ -660,6 +927,115 @@ async def send_favorites(m: Message):
     rows.append([InlineKeyboardButton(text="🧹 Очистить избранное", callback_data="favclear")])
     await m.answer(f"⭐ <b>Избранные герои</b> · {len(chosen)}",
                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+# ---------------------------------------------------------------------------
+# Герой дня
+# ---------------------------------------------------------------------------
+def hero_of_day(heroes: list[dict]) -> tuple[dict, str]:
+    """Один и тот же герой в течение дня (по МСК)."""
+    now = time.gmtime(time.time() + 3 * 3600)
+    seed = int(hashlib.sha256(time.strftime("%Y-%m-%d", now).encode()).hexdigest(), 16)
+    return heroes[seed % len(heroes)], time.strftime("%d.%m.%Y", now)
+
+
+async def send_daily(m: Message):
+    try:
+        heroes = await fetch_heroes()
+    except Exception:  # noqa: BLE001
+        log.exception("daily heroes failed")
+        await m.answer("😔 Не удалось получить список героев, попробуй позже.")
+        return
+    h, day = hero_of_day(heroes)
+    await m.answer(f"🎲 <b>Герой дня</b> · {day}\n"
+                   f"<i>Каждый день новый герой — заходи проверить.</i>")
+    await show_hero(m, h)
+
+
+# ---------------------------------------------------------------------------
+# Контр-пик по драфту
+# ---------------------------------------------------------------------------
+COUNTER_PROMPT = ("⚔️ Напиши героев врага через запятую (1–5):\n"
+                  "например: <code>pudge, invoker, am</code>\n"
+                  "можно по-русски: <code>пудж, инвокер, мортра</code>")
+
+
+def format_counters(data: dict) -> str:
+    enemies = ", ".join(f"<b>{esc(x)}</b>" for x in data["enemies"])
+    lines = ["⚔️ <b>Контр-пик по драфту</b>", f"Враги: {enemies}", ""]
+    if not data["rows"]:
+        lines.append("Не нашёл героев с плюсовым матчапом — попробуй другой драфт.")
+        return "\n".join(lines)
+    for i, r in enumerate(data["rows"], 1):
+        lines.append(f"{i}. <b>{esc(r['hero'])}</b> — "
+                     f"{r['advantage']:+.1f}% в среднем")
+        detail = " · ".join(f"{esc(k)} {v:+.1f}%"
+                            for k, v in r["details"].items())
+        if detail:
+            lines.append(f"    ↳ {detail}")
+    lines.append("\n<i>Преимущество — средняя разница винрейта против выбранных "
+                 "врагов (OpenDota, публичные матчи).</i>")
+    return "\n".join(lines)
+
+
+def counter_keyboard(rows: list[dict], heroes: list[dict]):
+    by_name = {h["en"]: h["slug"] for h in heroes}
+    buttons = []
+    for r in rows:
+        slug = by_name.get(r["hero"]) or r["hero"].lower().replace(" ", "-")
+        buttons.append(InlineKeyboardButton(text=r["hero"],
+                                            callback_data=f"hero:{slug}"))
+    kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(inline_keyboard=kb) if kb else None
+
+
+async def run_counter(m: Message, raw: str):
+    parts = [p.strip() for p in re.split(r"[,;\n]+", raw or "") if p.strip()][:5]
+    if not parts:
+        await m.answer(COUNTER_PROMPT)
+        return
+
+    chosen, unknown, seen = [], [], set()
+    for p in parts:
+        try:
+            matches = await asyncio.to_thread(find_hero, p)
+        except Exception:  # noqa: BLE001
+            matches = []
+        if not matches:
+            unknown.append(p)
+            continue
+        h = matches[0]
+        if h["slug"] not in seen:
+            seen.add(h["slug"])
+            chosen.append(h)
+
+    if not chosen:
+        await m.answer("🤷 Не нашёл ни одного героя. Попробуй ещё раз, например: "
+                       "<code>pudge, invoker</code>")
+        return
+
+    wait = await m.answer("⏳ Считаю контр-пики...")
+    try:
+        data = await asyncio.to_thread(opendota.get_counters,
+                                       [h["slug"] for h in chosen])
+    except Exception:  # noqa: BLE001
+        log.exception("counter failed")
+        await wait.edit_text("😔 Не удалось посчитать контр-пики, попробуй позже.")
+        return
+
+    try:
+        heroes = await fetch_heroes()
+    except Exception:  # noqa: BLE001
+        heroes = []
+
+    text = format_counters(data)
+    if unknown:
+        text += f"\n\n<i>Не нашёл: {esc(', '.join(unknown))}</i>"
+    try:
+        await wait.edit_text(text, reply_markup=counter_keyboard(data["rows"], heroes),
+                             disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        log.exception("counter send failed")
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +1094,12 @@ async def on_match(m: Message, state: FSMContext):
     await show_match(m, digits)
 
 
+@router.message(F.text, Counter.waiting)
+async def on_counter(m: Message, state: FSMContext):
+    await state.clear()
+    await run_counter(m, m.text or "")
+
+
 @router.callback_query(F.data.startswith("fav:"))
 async def cb_fav(cq: CallbackQuery):
     payload = cq.data.split(":", 1)[1]
@@ -743,6 +1125,81 @@ async def cb_favclear(cq: CallbackQuery):
     except Exception:  # noqa: BLE001
         await cq.bot.send_message(cq.message.chat.id,
                                   "⭐ <b>Избранное пусто</b>")
+
+
+@router.callback_query(F.data.startswith("meta:"))
+async def cb_meta(cq: CallbackQuery):
+    try:
+        key = int(cq.data.split(":", 1)[1])
+    except ValueError:
+        await cq.answer("Некорректный ранг")
+        return
+    await cq.answer()
+    try:
+        meta = await asyncio.to_thread(opendota.get_meta, key)
+    except Exception:  # noqa: BLE001
+        log.exception("meta bracket failed")
+        await cq.bot.send_message(cq.message.chat.id,
+                                  "😔 Нет данных по этому рангу, попробуй другой.")
+        return
+    try:
+        await cq.message.edit_text(format_meta(meta),
+                                   reply_markup=meta_keyboard(key))
+    except Exception:  # noqa: BLE001
+        await cq.bot.send_message(cq.message.chat.id, format_meta(meta),
+                                  reply_markup=meta_keyboard(key))
+
+
+@router.callback_query(F.data.startswith("mself:"))
+async def cb_match_self(cq: CallbackQuery):
+    try:
+        _, mid, slot = cq.data.split(":")
+        mid = int(mid)
+    except ValueError:
+        await cq.answer("Некорректная кнопка")
+        return
+    try:
+        data = await _get_match(mid)
+    except Exception:  # noqa: BLE001
+        log.exception("match load failed")
+        await cq.answer("Не удалось загрузить матч", show_alert=True)
+        return
+    await cq.answer()
+    back = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⬅️ К сводке матча",
+                             callback_data=f"mmatch:{mid}")]])
+    try:
+        await cq.message.edit_text(format_personal(data, slot),
+                                   reply_markup=back,
+                                   disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await cq.bot.send_message(cq.message.chat.id, format_personal(data, slot),
+                                  reply_markup=back,
+                                  disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("mmatch:"))
+async def cb_match_summary(cq: CallbackQuery):
+    try:
+        mid = int(cq.data.split(":", 1)[1])
+    except ValueError:
+        await cq.answer("Некорректная кнопка")
+        return
+    try:
+        data = await _get_match(mid)
+    except Exception:  # noqa: BLE001
+        log.exception("match load failed")
+        await cq.answer("Не удалось загрузить матч", show_alert=True)
+        return
+    await cq.answer()
+    try:
+        await cq.message.edit_text(format_match(data),
+                                   reply_markup=match_keyboard(data),
+                                   disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        await cq.bot.send_message(cq.message.chat.id, format_match(data),
+                                  reply_markup=match_keyboard(data),
+                                  disable_web_page_preview=True)
 
 
 @router.message(F.text)
@@ -808,6 +1265,19 @@ async def show_hero(m_or_cq, h: dict):
                                           format_hero_card(data),
                                           reply_markup=hero_card_keyboard(h["slug"], en, fav),
                                           disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "daily")
+async def cb_daily(cq: CallbackQuery):
+    await cq.answer()
+    await send_daily(cq.message)
+
+
+@router.callback_query(F.data == "counter")
+async def cb_counter(cq: CallbackQuery, state: FSMContext):
+    await cq.answer()
+    await state.set_state(Counter.waiting)
+    await cq.bot.send_message(cq.message.chat.id, COUNTER_PROMPT)
 
 
 @router.callback_query(F.data == "noop")
@@ -1025,7 +1495,9 @@ async def main():
                 BotCommand(command="start", description="🏠 Главное меню"),
                 BotCommand(command="heroes", description="🛡 Выбрать героя"),
                 BotCommand(command="search", description="✍️ Поиск героя"),
-                BotCommand(command="meta", description="📊 Мета патча"),
+                BotCommand(command="meta", description="📊 Мета патча по MMR"),
+                BotCommand(command="counter", description="⚔️ Контр-пик по драфту"),
+                BotCommand(command="daily", description="🎲 Герой дня"),
                 BotCommand(command="favs", description="⭐ Избранное"),
                 BotCommand(command="match", description="📈 Разбор матча"),
             ])

@@ -545,3 +545,112 @@ def build_start_banner(out_path: str, heroes: list[dict] | None = None):
 
     base.convert("RGB").save(out_path, "PNG")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# итоговые сборки матча
+# ---------------------------------------------------------------------------
+def build_match_image(match: dict, out_path: str):
+    """Итоговые сборки матча: 2 команды x 5 игроков, портрет + 6 слотов + нейтралка."""
+    players = match.get("players") or []
+    if not players:
+        return None
+
+    W = 666
+    PAD = 12
+    HEAD_H = 28
+    ROW_H = 50
+    PORT_W, PORT_H = 58, 33
+    NAME_W = 132
+    IT_W, IT_H = 40, 29
+    IT_GAP = 4
+    NEU_W, NEU_H = 34, 25
+    ITEMS_X = PAD + PORT_W + 8 + NAME_W
+
+    teams = [(True, "RADIANT", (120, 220, 150)),
+             (False, "DIRE", (235, 110, 110))]
+    H = PAD * 2 + len(teams) * HEAD_H
+    for side, _, _ in teams:
+        H += sum(1 for p in players if p["radiant"] == side) * ROW_H
+
+    img = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+
+    f_head = _font(14, bold=True)
+    f_kda = _font(13, bold=True)
+    f_small = _font(10)
+
+    y = PAD
+    icons = {}
+    for side, title, color in teams:
+        team = [p for p in players if p["radiant"] == side]
+        draw.rectangle([PAD, y, W - PAD, y + HEAD_H - 2], fill=(28, 34, 46))
+        draw.text((PAD + 8, y + 5), title, font=f_head, fill=color)
+        kills = match.get("totals", {}).get(side, {}).get("kills", 0)
+        gold = match.get("totals", {}).get(side, {}).get("net", 0)
+        info = f"{kills} kills · {gold // 1000}k gold"
+        iw = draw.textlength(info, font=f_small)
+        draw.text((W - PAD - 8 - iw, y + 9), info, font=f_small, fill=DIM)
+        y += HEAD_H
+
+        for i, p in enumerate(team):
+            row_bg = (24, 29, 40) if i % 2 == 0 else (20, 24, 33)
+            draw.rectangle([PAD, y, W - PAD, y + ROW_H - 2], fill=row_bg)
+
+            icon = icons.get(p["hero"]) or get_hero_icon(p["hero"])
+            icons[p["hero"]] = icon
+            if icon is not None:
+                ic = icon.resize((PORT_W, PORT_H))
+                img.paste(ic, (PAD + 4, y + (ROW_H - PORT_H) // 2), ic)
+            else:
+                draw.rectangle([PAD + 4, y + (ROW_H - PORT_H) // 2,
+                                PAD + 4 + PORT_W, y + (ROW_H + PORT_H) // 2],
+                               fill=(34, 40, 52))
+
+            nx = PAD + PORT_W + 8
+            lines, fit_f = _fit_name(draw, p["hero"], NAME_W - 4,
+                                     max_size=14, min_size=10, max_lines=2)
+            line_h = int(getattr(fit_f, "size", 11) * 1.2)
+            ny = y + (ROW_H - line_h * len(lines)) // 2
+            for ln in lines:
+                draw.text((nx, ny), ln, font=fit_f, fill=FG)
+                ny += line_h
+
+            for j, it in enumerate(p["items"][:6]):
+                ix = ITEMS_X + j * (IT_W + IT_GAP)
+                iy = y + (ROW_H - IT_H) // 2
+                key = it["internal"]
+                if key not in icons:
+                    icons[key] = get_item_icon(key, display=it.get("name", ""))
+                ic = icons[key]
+                if ic is not None:
+                    ic = ic.resize((IT_W, IT_H))
+                    img.paste(ic, (ix, iy), ic)
+                else:
+                    draw.rounded_rectangle([ix, iy, ix + IT_W, iy + IT_H],
+                                           radius=3, fill=(40, 46, 60))
+
+            neutral = p["items"][6] if len(p["items"]) > 6 else None
+            nx2 = ITEMS_X + 6 * (IT_W + IT_GAP) + 4
+            iy = y + (ROW_H - NEU_H) // 2
+            draw.rounded_rectangle([nx2 - 2, iy - 2, nx2 + NEU_W + 2, iy + NEU_H + 2],
+                                   radius=4, outline=(70, 80, 100))
+            if neutral:
+                key = neutral["internal"]
+                if key not in icons:
+                    icons[key] = get_item_icon(key, display=neutral.get("name", ""))
+                ic = icons[key]
+                if ic is not None:
+                    ic = ic.resize((NEU_W, NEU_H))
+                    img.paste(ic, (nx2, iy), ic)
+
+            kda = f"{p['k']}/{p['d']}/{p['a']}"
+            kw = draw.textlength(kda, font=f_kda)
+            draw.text((W - PAD - 10 - kw, y + 8), kda, font=f_kda, fill=FG)
+            gpm = f"{p['gpm']} GPM"
+            gw = draw.textlength(gpm, font=f_small)
+            draw.text((W - PAD - 10 - gw, y + 27), gpm, font=f_small, fill=DIM)
+            y += ROW_H
+
+    img.save(out_path, "PNG")
+    return out_path
