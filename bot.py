@@ -358,6 +358,79 @@ START_TEXT = (
     "<b>Выбери героя кнопкой ниже</b> 👇"
 )
 
+# --- таймер до перезапуска --------------------------------------------------
+# На GitHub Actions бот живёт 5 ч 50 мин (timeout 21000 в workflow), затем
+# процесс завершается и его поднимает новый запуск. Показываем, сколько
+# осталось, — только в облаке, на ПК/VPS таймер не нужен.
+_RUN_SECONDS = int(os.environ.get("BOT_RUN_SECONDS", "21000"))
+_TIMER_ON = (os.environ.get("GITHUB_ACTIONS") == "true"
+             or os.environ.get("BOT_TIMER") == "1")
+_PROCESS_START = time.time()
+_start_tasks: dict[int, "asyncio.Task"] = {}
+
+
+def _left_text(seconds: float) -> str:
+    sec = max(0, int(seconds))
+    hours, minutes = sec // 3600, (sec % 3600) // 60
+    if hours and minutes:
+        return f"{hours} ч {minutes} мин"
+    if hours:
+        return f"{hours} ч"
+    if minutes:
+        return f"{minutes} мин"
+    return "меньше минуты"
+
+
+def _msk_time(ts: float) -> str:
+    return time.strftime("%H:%M", time.gmtime(ts + 3 * 3600))
+
+
+def start_text() -> str:
+    """Приветствие + строка таймера (если бот работает в облаке)."""
+    if not _TIMER_ON:
+        return START_TEXT
+    left = _RUN_SECONDS - (time.time() - _PROCESS_START)
+    if left <= 0:
+        line = "⏳ <b>Перезапуск бота</b> — вот-вот, подожди пару минут"
+    else:
+        line = (f"⏳ <b>До перезапуска бота:</b> {_left_text(left)} "
+                f"<i>(≈ {_msk_time(_PROCESS_START + _RUN_SECONDS)} МСК)</i>")
+    return f"{START_TEXT}\n\n{line}"
+
+
+async def _countdown(bot: Bot, chat_id: int, message_id: int, photo: bool):
+    """Раз в минуту обновляет строку таймера в стартовом сообщении."""
+    while True:
+        left = _RUN_SECONDS - (time.time() - _PROCESS_START)
+        if left <= 0:
+            return
+        await asyncio.sleep(min(60, left))
+        if _RUN_SECONDS - (time.time() - _PROCESS_START) <= 0:
+            return
+        text = start_text()
+        try:
+            if photo:
+                await bot.edit_message_caption(chat_id=chat_id,
+                                               message_id=message_id,
+                                               caption=text)
+            else:
+                await bot.edit_message_text(chat_id=chat_id,
+                                            message_id=message_id, text=text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — сообщение удалили/заменили
+            return
+
+
+def _start_countdown(bot: Bot, chat_id: int, message_id: int, photo: bool):
+    if not _TIMER_ON:
+        return
+    old = _start_tasks.pop(chat_id, None)
+    if old is not None and not old.done():
+        old.cancel()
+    _start_tasks[chat_id] = asyncio.create_task(
+        _countdown(bot, chat_id, message_id, photo))
+
 
 @router.message(CommandStart())
 async def cmd_start(m: Message, state: FSMContext):
@@ -384,13 +457,16 @@ async def send_start(m: Message):
                 _banner_path = ""
     if _banner_path:
         try:
-            await m.answer_photo(FSInputFile(_banner_path),
-                                 caption=START_TEXT,
-                                 reply_markup=main_menu_kb())
-            return
+            sent = await m.answer_photo(FSInputFile(_banner_path),
+                                        caption=start_text(),
+                                        reply_markup=main_menu_kb())
         except Exception:  # noqa: BLE001
             log.exception("banner send failed")
-    await m.answer(START_TEXT, reply_markup=main_menu_kb())
+        else:
+            _start_countdown(m.bot, m.chat.id, sent.message_id, True)
+            return
+    sent = await m.answer(start_text(), reply_markup=main_menu_kb())
+    _start_countdown(m.bot, m.chat.id, sent.message_id, False)
 
 
 @router.message(Command("heroes"))
