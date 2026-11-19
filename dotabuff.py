@@ -81,6 +81,16 @@ def _get(url: str, tries: int = 4) -> str:
 # Список героев
 # ----------------------------------------------------------------------------
 
+def _static_heroes() -> list[dict]:
+    """Список героев из файла heroes_static.json (работает без интернета)."""
+    try:
+        data = json.loads(Path(__file__).with_name("heroes_static.json")
+                          .read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    return data if isinstance(data, list) else []
+
+
 def get_heroes() -> list[dict]:
     """[{en, slug}] — отсортировано по имени.
 
@@ -101,7 +111,16 @@ def get_heroes() -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
 
-    soup = BeautifulSoup(_get(f"{BASE}/heroes"), "html.parser")
+    try:
+        soup = BeautifulSoup(_get(f"{BASE}/heroes"), "html.parser")
+    except Exception as e:  # noqa: BLE001
+        # dotabuff блокирует IP серверов (Cloudflare 403) — берём список из файла
+        heroes = _static_heroes()
+        if heroes:
+            _cache.set("heroes", heroes)
+            return heroes
+        raise
+
     heroes, seen = [], set()
     # только строки таблицы со списком героев (не навигация)
     for a in soup.select("table a[href^='/heroes/']"):
@@ -117,6 +136,8 @@ def get_heroes() -> list[dict]:
         heroes.append({"en": name, "slug": slug})
 
     heroes.sort(key=lambda h: h["en"].lower())
+    if not heroes:
+        heroes = _static_heroes()
     if not heroes:
         raise RuntimeError("Не удалось получить список героев с dotabuff")
     _cache.set("heroes", heroes)
@@ -148,6 +169,18 @@ def get_hero_overview(slug: str) -> dict:
     if cached is not None:
         return cached
 
+    try:
+        data = _overview_from_dotabuff(slug)
+    except Exception as e:  # noqa: BLE001
+        # dotabuff блокирует IP серверов (403) — берём данные из OpenDota API
+        import opendota
+        data = opendota.get_hero_overview(slug)
+        data["dotabuff_error"] = repr(e)[:120]
+    _cache.set(key, data)
+    return data
+
+
+def _overview_from_dotabuff(slug: str) -> dict:
     soup = BeautifulSoup(_get(f"{BASE}/heroes/{slug}"), "html.parser")
     text = soup.get_text(" ", strip=True)
 
@@ -249,8 +282,8 @@ def get_hero_overview(slug: str) -> dict:
         "items": items[:10],
         "best_vs": _versus("Hero Advantage"),
         "worst_vs": _versus("Hero Disadvantage"),
+        "source": "dotabuff",
     }
-    _cache.set(key, data)
     return data
 
 

@@ -216,6 +216,8 @@ def hero_card_keyboard(slug: str, en: str) -> InlineKeyboardMarkup:
 def format_hero_card(h: dict) -> str:
     ru = h["en"]
     lines = [f"🛡 <b>{html.escape(ru)}</b>"]
+    if h.get("source") == "opendota":
+        lines.append("<i>источник: OpenDota API</i>")
     if h.get("attrs"):
         lines.append("🏷 " + " · ".join(html.escape(a) for a in h["attrs"]))
     if h.get("winrate"):
@@ -282,6 +284,14 @@ class Search(StatesGroup):
 
 async def fetch_heroes():
     return await asyncio.to_thread(dotabuff.get_heroes)
+
+
+async def _warm_heroes():
+    """Фоновый прогрев списка героев: ошибки только в лог, без падения бота."""
+    try:
+        await fetch_heroes()
+    except Exception as e:  # noqa: BLE001
+        log.warning("не удалось прогреть список героев: %s", repr(e)[:120])
 
 
 async def send_hero_list(chat_id, page: int, bot: Bot, message: Message | None = None):
@@ -599,8 +609,24 @@ async def cb_dbguide(cq: CallbackQuery):
         selected = guides[:3]
         await msg.edit_text(format_guides(hero, "all", selected),
                             disable_web_page_preview=True)
+        return
     except Exception:  # noqa: BLE001
         log.exception("guides failed")
+
+    # dotabuff недоступен — показываем про-билды с D2PT вместо гайдов
+    try:
+        en = slug.replace("-", " ").title()
+        for h in await fetch_heroes():
+            if h["slug"] == slug:
+                en = h["en"]
+                break
+        data = await asyncio.to_thread(d2pt.get_builds, en)
+        text = ("📖 <b>Гайды dotabuff недоступны с этого сервера</b>\n"
+                "Показываю про-билды с dota2protracker:\n\n"
+                + d2pt.format_position(data, "all"))
+        await msg.edit_text(text, disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        log.exception("d2pt fallback failed")
         await msg.edit_text("😔 Не удалось загрузить гайды, попробуй позже.")
 
 
@@ -649,6 +675,19 @@ def _rotate_to_alive_ip() -> str:
     return _tg_current_ip()
 
 
+def _log_sources_status():
+    """Пишет в лог, какие источники доступны с сервера (для диагностики)."""
+    checks = (
+        ("dotabuff /heroes", lambda: f"{len(dotabuff.get_heroes())} героев"),
+        ("dota2protracker", lambda: sorted(d2pt.get_builds("Tinker")["positions"])),
+    )
+    for name, fn in checks:
+        try:
+            log.info("источник %-18s OK: %s", name, fn())
+        except Exception as e:  # noqa: BLE001
+            log.warning("источник %-18s НЕДОСТУПЕН: %s", name, repr(e)[:120])
+
+
 async def main():
     if not TOKEN:
         print("Не найден токен бота!")
@@ -657,7 +696,9 @@ async def main():
 
     _apply_tg_dns_override()
     # прогрев кеша списка героев в фоне
-    asyncio.create_task(fetch_heroes())
+    asyncio.create_task(_warm_heroes())
+    # проверка источников данных (не блокирует запуск)
+    asyncio.create_task(asyncio.to_thread(_log_sources_status))
 
     dp = Dispatcher()
     dp.include_router(router)

@@ -1,0 +1,510 @@
+[
+{
+"en": "Abaddon",
+"slug": "abaddon"
+},
+{
+"en": "Alchemist",
+"slug": "alchemist"
+},
+{
+"en": "Ancient Apparition",
+"slug": "ancient-apparition"
+},
+{
+"en": "Anti-Mage",
+"slug": "anti-mage"
+},
+{
+"en": "Arc Warden",
+"slug": "arc-warden"
+},
+{
+"en": "Axe",
+"slug": "axe"
+},
+{
+"en": "Bane",
+"slug": "bane"
+},
+{
+"en": "Batrider",
+"slug": "batrider"
+},
+{
+"en": "Beastmaster",
+"slug": "beastmaster"
+},
+{
+"en": "Bloodseeker",
+"slug": "bloodseeker"
+},
+{
+"en": "Bounty Hunter",
+"slug": "bounty-hunter"
+},
+{
+"en": "Brewmaster",
+"slug": "brewmaster"
+},
+{
+"en": "Bristleback",
+"slug": "bristleback"
+},
+{
+"en": "Broodmother",
+"slug": "broodmother"
+},
+{
+"en": "Centaur Warrunner",
+"slug": "centaur-warrunner"
+},
+{
+"en": "Chaos Knight",
+"slug": "chaos-knight"
+},
+{
+"en": "Chen",
+"slug": "chen"
+},
+{
+"en": "Clinkz",
+"slug": "clinkz"
+},
+{
+"en": "Clockwerk",
+"slug": "clockwerk"
+},
+{
+"en": "Crystal Maiden",
+"slug": "crystal-maiden"
+},
+{
+"en": "Dark Seer",
+"slug": "dark-seer"
+},
+{
+"en": "Dark Willow",
+"slug": "dark-willow"
+},
+{
+"en": "Dawnbreaker",
+"slug": "dawnbreaker"
+},
+{
+"en": "Dazzle",
+"slug": "dazzle"
+},
+{
+"en": "Death Prophet",
+"slug": "death-prophet"
+},
+{
+"en": "Disruptor",
+"slug": "disruptor"
+},
+{
+"en": "Doom",
+"slug": "doom"
+},
+{
+"en": "Dragon Knight",
+"slug": "dragon-knight"
+},
+{
+"en": "Drow Ranger",
+"slug": "drow-ranger"
+},
+{
+"en": "Earth Spirit",
+"slug": "earth-spirit"
+},
+{
+"en": "Earthshaker",
+"slug": "earthshaker"
+},
+{
+"en": "Elder Titan",
+"slug": "elder-titan"
+},
+{
+"en": "Ember Spirit",
+"slug": "ember-spirit"
+},
+{
+"en": "Enchantress",
+"slug": "enchantress"
+},
+{
+"en": "Enigma",
+"slug": "enigma"
+},
+{
+"en": "Faceless Void",
+"slug": "faceless-void"
+},
+{
+"en": "Grimstroke",
+"slug": "grimstroke"
+},
+{
+"en": "Gyrocopter",
+"slug": "gyrocopter"
+},
+{
+"en": "Hoodwink",
+"slug": "hoodwink"
+},
+{
+"en": "Huskar",
+"slug": "huskar"
+},
+{
+"en": "Invoker",
+"slug": "invoker"
+},
+{
+"en": "Io",
+"slug": "io"
+},
+{
+"en": "Jakiro",
+"slug": "jakiro"
+},
+{
+"en": "Juggernaut",
+"slug": "juggernaut"
+},
+{
+"en": "Keeper of the Light",
+"slug": "keeper-of-the-light"
+},
+{
+"en": "Kez",
+"slug": "kez"
+},
+{
+"en": "Kunkka",
+"slug": "kunkka"
+},
+{
+"en": "Largo",
+"slug": "largo"
+},
+{
+"en": "Legion Commander",
+"slug": "legion-commander"
+},
+{
+"en": "Leshrac",
+"slug": "leshrac"
+},
+{
+"en": "Lich",
+"slug": "lich"
+},
+{
+"en": "Lifestealer",
+"slug": "lifestealer"
+},
+{
+"en": "Lina",
+"slug": "lina"
+},
+{
+"en": "Lion",
+"slug": "lion"
+},
+{
+"en": "Lone Druid",
+"slug": "lone-druid"
+},
+{
+"en": "Luna",
+"slug": "luna"
+},
+{
+"en": "Lycan",
+"slug": "lycan"
+},
+{
+"en": "Magnus",
+"slug": "magnus"
+},
+{
+"en": "Marci",
+"slug": "marci"
+},
+{
+"en": "Mars",
+"slug": "mars"
+},
+{
+"en": "Medusa",
+"slug": "medusa"
+},
+{
+"en": "Meepo",
+"slug": "meepo"
+},
+{
+"en": "Mirana",
+"slug": "mirana"
+},
+{
+"en": "Monkey King",
+"slug": "monkey-king"
+},
+{
+"en": "Morphling",
+"slug": "morphling"
+},
+{
+"en": "Muerta",
+"slug": "muerta"
+},
+{
+"en": "Naga Siren",
+"slug": "naga-siren"
+},
+{
+"en": "Nature's Prophet",
+"slug": "natures-prophet"
+},
+{
+"en": "Necrophos",
+"slug": "necrophos"
+},
+{
+"en": "Night Stalker",
+"slug": "night-stalker"
+},
+{
+"en": "Nyx Assassin",
+"slug": "nyx-assassin"
+},
+{
+"en": "Ogre Magi",
+"slug": "ogre-magi"
+},
+{
+"en": "Omniknight",
+"slug": "omniknight"
+},
+{
+"en": "Oracle",
+"slug": "oracle"
+},
+{
+"en": "Outworld Destroyer",
+"slug": "outworld-destroyer"
+},
+{
+"en": "Pangolier",
+"slug": "pangolier"
+},
+{
+"en": "Phantom Assassin",
+"slug": "phantom-assassin"
+},
+{
+"en": "Phantom Lancer",
+"slug": "phantom-lancer"
+},
+{
+"en": "Phoenix",
+"slug": "phoenix"
+},
+{
+"en": "Primal Beast",
+"slug": "primal-beast"
+},
+{
+"en": "Puck",
+"slug": "puck"
+},
+{
+"en": "Pudge",
+"slug": "pudge"
+},
+{
+"en": "Pugna",
+"slug": "pugna"
+},
+{
+"en": "Queen of Pain",
+"slug": "queen-of-pain"
+},
+{
+"en": "Razor",
+"slug": "razor"
+},
+{
+"en": "Riki",
+"slug": "riki"
+},
+{
+"en": "Ringmaster",
+"slug": "ringmaster"
+},
+{
+"en": "Rubick",
+"slug": "rubick"
+},
+{
+"en": "Sand King",
+"slug": "sand-king"
+},
+{
+"en": "Shadow Demon",
+"slug": "shadow-demon"
+},
+{
+"en": "Shadow Fiend",
+"slug": "shadow-fiend"
+},
+{
+"en": "Shadow Shaman",
+"slug": "shadow-shaman"
+},
+{
+"en": "Silencer",
+"slug": "silencer"
+},
+{
+"en": "Skywrath Mage",
+"slug": "skywrath-mage"
+},
+{
+"en": "Slardar",
+"slug": "slardar"
+},
+{
+"en": "Slark",
+"slug": "slark"
+},
+{
+"en": "Snapfire",
+"slug": "snapfire"
+},
+{
+"en": "Sniper",
+"slug": "sniper"
+},
+{
+"en": "Spectre",
+"slug": "spectre"
+},
+{
+"en": "Spirit Breaker",
+"slug": "spirit-breaker"
+},
+{
+"en": "Storm Spirit",
+"slug": "storm-spirit"
+},
+{
+"en": "Sven",
+"slug": "sven"
+},
+{
+"en": "Techies",
+"slug": "techies"
+},
+{
+"en": "Templar Assassin",
+"slug": "templar-assassin"
+},
+{
+"en": "Terrorblade",
+"slug": "terrorblade"
+},
+{
+"en": "Tidehunter",
+"slug": "tidehunter"
+},
+{
+"en": "Timbersaw",
+"slug": "timbersaw"
+},
+{
+"en": "Tinker",
+"slug": "tinker"
+},
+{
+"en": "Tiny",
+"slug": "tiny"
+},
+{
+"en": "Treant Protector",
+"slug": "treant-protector"
+},
+{
+"en": "Troll Warlord",
+"slug": "troll-warlord"
+},
+{
+"en": "Tusk",
+"slug": "tusk"
+},
+{
+"en": "Underlord",
+"slug": "underlord"
+},
+{
+"en": "Undying",
+"slug": "undying"
+},
+{
+"en": "Ursa",
+"slug": "ursa"
+},
+{
+"en": "Vengeful Spirit",
+"slug": "vengeful-spirit"
+},
+{
+"en": "Venomancer",
+"slug": "venomancer"
+},
+{
+"en": "Viper",
+"slug": "viper"
+},
+{
+"en": "Visage",
+"slug": "visage"
+},
+{
+"en": "Void Spirit",
+"slug": "void-spirit"
+},
+{
+"en": "Warlock",
+"slug": "warlock"
+},
+{
+"en": "Weaver",
+"slug": "weaver"
+},
+{
+"en": "Windranger",
+"slug": "windranger"
+},
+{
+"en": "Winter Wyvern",
+"slug": "winter-wyvern"
+},
+{
+"en": "Witch Doctor",
+"slug": "witch-doctor"
+},
+{
+"en": "Wraith King",
+"slug": "wraith-king"
+},
+{
+"en": "Zeus",
+"slug": "zeus"
+}
+]

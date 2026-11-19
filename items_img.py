@@ -58,9 +58,30 @@ _FONT_NAMES_BOLD = ("arialbd.ttf", "DejaVuSans-Bold.ttf",
                     "LiberationSans-Bold.ttf")
 
 
+def _ensure_fonts() -> Path:
+    """Шрифты для картинок. Если их нет рядом с ботом (например, на сервере) —
+    скачиваем один раз и кешируем, чтобы не зависеть от системных шрифтов."""
+    d = _HERE / "assets" / "fonts"
+    if getattr(_ensure_fonts, "_done", False):
+        return d
+    _ensure_fonts._done = True
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"):
+            p = d / name
+            if p.exists() and p.stat().st_size > 100_000:
+                continue
+            data = _download("https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/" + name)
+            if data:
+                p.write_bytes(data)
+    except Exception:  # noqa: BLE001
+        pass
+    return d
+
+
 def _font(size: int, bold: bool = False):
     """Сначала шрифт из assets/fonts (одинаково на ПК и сервере), потом системный."""
-    bundled = Path(__file__).with_name("assets").joinpath("fonts")
+    bundled = _ensure_fonts()
     candidates = [bundled / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")]
     for name in (_FONT_NAMES_BOLD if bold else _FONT_NAMES):
         for d in _FONT_DIRS:
