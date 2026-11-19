@@ -1,0 +1,5 @@
+aiogram>=3.13
+curl_cffi>=0.7
+beautifulsoup4>=4.12
+Pillow>=10.0
+aiohttp-socks>=0.8
