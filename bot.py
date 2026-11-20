@@ -1150,16 +1150,29 @@ async def _hero_poster(data: dict, slug: str) -> str | None:
     subtitle = f"ПАТЧ {num}" if num and num != "—" else ""
     out = str(Path(__file__).with_name(f"_hero_{slug}.png"))
 
-    # топ-3 сборки по позициям (D2PT); если сайт недоступен — просто без блока
+    # топ-3 сборки по позициям (D2PT) + предметы лучшей сборки
     poster_data = dict(data)
+    poster_data["top_builds"] = []
+    poster_data["top_build"] = None
     try:
         builds = await asyncio.wait_for(
             asyncio.to_thread(d2pt.get_builds, data.get("en") or ""),
             timeout=10)
-        poster_data["top_builds"] = d2pt.top_positions(builds)
+        top = d2pt.top_positions(builds)
+        poster_data["top_builds"] = top
+        if top:
+            pos = top[0]["pos"]
+            build = (builds.get("positions") or {}).get(pos)
+            if not build:
+                build = await asyncio.wait_for(
+                    asyncio.to_thread(d2pt.get_position_build,
+                                      data.get("en") or "", pos),
+                    timeout=10)
+            build = dict(build)
+            build["label"] = top[0]["short"]
+            poster_data["top_build"] = build
     except Exception:  # noqa: BLE001
         log.debug("d2pt builds for poster failed", exc_info=True)
-        poster_data["top_builds"] = []
 
     try:
         await asyncio.to_thread(items_img.build_hero_poster, poster_data, out,

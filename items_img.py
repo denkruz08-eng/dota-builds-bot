@@ -938,32 +938,62 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                           wr, font=f_w, fill=GOLD)
             y2 += 36
 
-    # предметы
-    items = (data.get("items") or [])[:3]
-    if items:
+    # предметы: сборка топ-1 по винрейту (D2PT), иначе — топ предметов недели
+    build = data.get("top_build") or {}
+    six = [x for x in (build.get("sixslot") or []) if x.get("item")][:6]
+    if not six:
+        six = [x for x in (build.get("core") or []) if x.get("item")][:6]
+
+    if six:
         iy = max(958, y2 + 22)
-        draw.text((m, iy), "ТОП ПРЕДМЕТЫ", font=_font(24, bold=True), fill=GOLD)
-        iw, ih = 150, 109
-        step = 200
-        for i, it in enumerate(items):
-            ix = m + i * step
-            iyy = iy + 44
-            icon = get_item_icon("", display=it.get("name", ""))
+        heading = "СБОРКА"
+        if build.get("label"):
+            heading += f" · {build['label']}"
+        draw.text((m, iy), heading, font=_font(24, bold=True), fill=GOLD)
+
+        iw, ih, gap = 134, 97, 18
+        ty = iy + 42
+        for i, it in enumerate(six):
+            ix = m + i * (iw + gap)
+            icon = get_item_icon("", display=it.get("item", ""))
             if icon is not None:
                 ic = icon.resize((iw, ih))
-                img.paste(ic, (ix, iyy), ic)
-            draw.rounded_rectangle([ix - 1, iyy - 1, ix + iw, iyy + ih],
+                img.paste(ic, (ix, ty), ic)
+            draw.rounded_rectangle([ix - 1, ty - 1, ix + iw, ty + ih],
                                    radius=8, outline=(72, 78, 94), width=2)
-            f_in = _font(20, bold=True)
-            ty = iyy + ih + 10
-            for line in _wrap(draw, it.get("name", ""), f_in, iw + 24,
+            f_in = _font(15, bold=True)
+            ny = ty + ih + 7
+            for line in _wrap(draw, it.get("item", ""), f_in, iw + 10,
                               max_lines=2):
-                draw.text((ix, ty), line, font=f_in, fill=(206, 212, 224))
-                ty += 25
-            wr = it.get("winrate")
-            if wr:
-                draw.text((ix, ty + 2), str(wr), font=_font(18),
-                          fill=(140, 148, 164))
+                draw.text((ix, ny), line, font=f_in, fill=(206, 212, 224))
+                ny += 18
+    else:
+        items = (data.get("items") or [])[:3]
+        if items:
+            iy = max(958, y2 + 22)
+            draw.text((m, iy), "ТОП ПРЕДМЕТЫ", font=_font(24, bold=True),
+                      fill=GOLD)
+            iw, ih = 150, 109
+            step = 200
+            for i, it in enumerate(items):
+                ix = m + i * step
+                iyy = iy + 44
+                icon = get_item_icon("", display=it.get("name", ""))
+                if icon is not None:
+                    ic = icon.resize((iw, ih))
+                    img.paste(ic, (ix, iyy), ic)
+                draw.rounded_rectangle([ix - 1, iyy - 1, ix + iw, iyy + ih],
+                                       radius=8, outline=(72, 78, 94), width=2)
+                f_in = _font(20, bold=True)
+                ty = iyy + ih + 10
+                for line in _wrap(draw, it.get("name", ""), f_in, iw + 24,
+                                  max_lines=2):
+                    draw.text((ix, ty), line, font=f_in, fill=(206, 212, 224))
+                    ty += 25
+                wr = it.get("winrate")
+                if wr:
+                    draw.text((ix, ty + 2), str(wr), font=_font(18),
+                              fill=(140, 148, 164))
 
     # подвал
     draw.line([m, 1218, W - m, 1218], fill=(60, 64, 78), width=2)

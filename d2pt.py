@@ -113,13 +113,13 @@ def _hero_url(en: str) -> str:
     return f"{BASE}/hero/{en.replace(' ', '+').replace('%27', chr(39))}/builds"
 
 
-def get_builds(en_name: str) -> dict:
-    key = en_name.lower()
+def get_builds(en_name: str, url: str | None = None) -> dict:
+    key = en_name.lower() + ("|" + url if url else "")
     v = _cache.get(key)
     if v and time.time() - v[0] < _TTL:
         return v[1]
 
-    t = _get(_hero_url(en_name))
+    t = _get(url or _hero_url(en_name))
 
     # словарь предметов: item_id -> (displayName, внутреннее имя для CDN)
     item_names = {}
@@ -275,6 +275,16 @@ def get_builds(en_name: str) -> dict:
             "url": _hero_url(en_name)}
     _cache[key] = (time.time(), data)
     return data
+
+
+def get_position_build(en_name: str, pos) -> dict:
+    """Детальная сборка конкретной позиции (?position=N отдаёт её buildData)."""
+    pos = int(pos)
+    data = get_builds(en_name, f"{_hero_url(en_name)}?position={pos}")
+    build = (data.get("positions") or {}).get(pos)
+    if not build:
+        raise RuntimeError(f"d2pt: нет сборки pos {pos}")
+    return build
 
 
 def top_positions(data: dict, limit: int = 3) -> list[dict]:
