@@ -258,6 +258,7 @@ _HERO_OVERRIDES = {
     "Nature's Prophet": "furion",
     "Necrophos": "necrolyte",
     "Outworld Destroyer": "obsidian_destroyer",
+    "Outworld Devourer": "obsidian_destroyer",
     "Queen of Pain": "queenofpain",
     "Shadow Fiend": "nevermore",
     "Timbersaw": "shredder",
@@ -795,8 +796,257 @@ def _fit_font(draw, text, max_w, max_size, min_size, bold=True):
     return _font(min_size, bold=bold)
 
 
+def _mini_strip(canvas, draw, items, x, y, w, h=36, count=6):
+    """Ряд мелких иконок предметов по ширине колонки.
+
+    Возвращает список (x, width) для подписей под иконками и высоту ряда.
+    """
+    items = [it for it in (items or []) if it.get("item")][:count]
+    if not items:
+        return [], 0
+    iw = int(h * 1.38)
+    n = len(items)
+    gap = int((w - n * iw) / (n - 1)) if n > 1 else 0
+    gap = max(6, min(gap, 18))
+    total = n * iw + (n - 1) * gap
+    while total > w and iw > 24:
+        iw -= 1
+        total = n * iw + (n - 1) * gap
+    x0 = x + max(0, (w - total) // 2)
+    cells = []
+    for i, it in enumerate(items):
+        ix = x0 + i * (iw + gap)
+        icon = get_item_icon("", display=it.get("item", ""))
+        if icon is not None:
+            ic = icon.resize((iw, h))
+            canvas.paste(ic, (ix, y), ic)
+        else:
+            draw.rounded_rectangle([ix, y, ix + iw, y + h], radius=6,
+                                   fill=(26, 31, 45))
+        draw.rounded_rectangle([ix - 1, y - 1, ix + iw, y + h], radius=6,
+                               outline=(72, 78, 94), width=2)
+        cells.append((ix, iw))
+    return cells, h
+
+
+def _draw_full_build(canvas, draw, build: dict, x: int, y: int, w: int):
+    """Правая колонка под портретом: старт, кор с таймингами, скиллы, таланты."""
+    label = build.get("label") or ""
+    draw.text((x, y), "ПОЛНАЯ СБОРКА", font=_font(19, bold=True), fill=GOLD)
+    if label:
+        f = _font(15)
+        draw.text((x + w - draw.textlength(label, font=f), y + 4),
+                  label, font=f, fill=(150, 158, 174))
+    y += 28
+
+    def head(text: str):
+        nonlocal y
+        draw.text((x, y), text, font=_font(12, bold=True), fill=GOLD_DIM)
+        y += 17
+
+    starting = [it for it in (build.get("starting") or []) if it.get("item")]
+    if starting:
+        head("СТАРТ")
+        cells, h = _mini_strip(canvas, draw, starting, x, y, w, h=36)
+        y += h + 3
+        counts, order = {}, []
+        for it in starting:
+            name = it.get("item", "")
+            if name not in counts:
+                counts[name] = 1
+                order.append(name)
+            else:
+                counts[name] += 1
+        names = " · ".join(f"{name} ×{counts[name]}" if counts[name] > 1
+                           else name for name in order)
+        f = _font(11)
+        for line in _wrap(draw, names, f, w, max_lines=2):
+            draw.text((x, y), line, font=f, fill=(148, 155, 170))
+            y += 13
+        y += 5
+
+    core = [it for it in (build.get("core") or []) if it.get("item")]
+    if core:
+        head("КОР · ТАЙМИНГИ")
+        cells, h = _mini_strip(canvas, draw, core, x, y, w, h=36)
+        f = _font(12, bold=True)
+        for (ix, iw), it in zip(cells, core):
+            minute = it.get("minute")
+            if not minute:
+                continue
+            t = f"{int(minute)}м"
+            draw.text((ix + (iw - draw.textlength(t, font=f)) / 2,
+                       y + h + 2), t, font=f, fill=GOLD)
+        y += h + 18
+
+    abilities = [a for a in (build.get("abilities") or []) if a]
+    if abilities:
+        head("ПРОКАЧКА")
+        f = _font(12)
+        text = " → ".join(abilities[:10])
+        if len(abilities) > 10:
+            text += " → …"
+        for line in _wrap(draw, text, f, w, max_lines=3):
+            draw.text((x, y), line, font=f, fill=(206, 212, 224))
+            y += 15
+        y += 5
+
+    talents = build.get("talents") or []
+    if talents:
+        head("ТАЛАНТЫ")
+        f = _font(12)
+        for t in talents[:4]:
+            line = f"{t.get('level')} · {t.get('name') or ''}"
+            while line and draw.textlength(line, font=f) > w:
+                line = line[:-1]
+            draw.text((x, y), line, font=f, fill=(206, 212, 224))
+            y += 15
+
+
+def build_meta_poster(meta: dict, out_path: str, subtitle: str = "") -> str:
+    """Постер меты: топ-10 по винрейту и популярности с портретами героев."""
+    W, H = POSTER_W, POSTER_H
+    m = 56
+
+    # фон: вертикальный градиент + тёплое пятно сверху справа
+    base = Image.new("RGB", (W, H), POSTER_BG)
+    gd = ImageDraw.Draw(base)
+    top_c, bot_c = (17, 22, 36), (7, 9, 15)
+    for y in range(H):
+        t = y / (H - 1)
+        gd.line([(0, y), (W, y)],
+                fill=tuple(int(top_c[i] + (bot_c[i] - top_c[i]) * t)
+                           for i in range(3)))
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(glow).ellipse([W - 640, -340, W + 240, 440],
+                                 fill=(170, 122, 42, 48))
+    canvas = Image.alpha_composite(base.convert("RGBA"),
+                                   glow.filter(ImageFilter.GaussianBlur(150)))
+    draw = ImageDraw.Draw(canvas)
+
+    # шапка
+    draw.rectangle([0, 0, W, 5], fill=GOLD)
+    draw.text((m, 54), "DOTA 2 · МЕТА ПАТЧА", font=_font(23, bold=True),
+              fill=GOLD)
+    if subtitle:
+        f_sub = _font(23, bold=True)
+        tw = draw.textlength(subtitle, font=f_sub)
+        draw.text((W - m - tw, 54), subtitle, font=f_sub, fill=(190, 196, 210))
+    draw.line([m, 102, W - m, 102], fill=(70, 74, 88), width=2)
+
+    # ранг и выборка
+    name = meta.get("bracket_name") or "Все ранги"
+    mmr = meta.get("mmr") or ""
+    matches = meta.get("matches") or 0
+    f_name = _fit_font(draw, name, W - 2 * m - 280, 66, 34)
+    draw.text((m, 140), name, font=f_name, fill=(238, 240, 246))
+
+    line2 = f"{_compact(matches)} матчей"
+    if mmr:
+        line2 += f" · ≈{mmr} MMR"
+    line2 += " · публичные матчи · OpenDota"
+    draw.text((m, 224), line2, font=_font(21), fill=(150, 158, 174))
+
+    heroes_n = meta.get("heroes") or 0
+    if heroes_n:
+        extra = f"{heroes_n} героев в выборке"
+        f_x = _font(19)
+        draw.text((W - m - draw.textlength(extra, font=f_x), 178), extra,
+                  font=f_x, fill=(125, 132, 148))
+
+    draw.line([m, 274, W - m, 274], fill=(52, 57, 72), width=2)
+
+    col_w = (W - 2 * m - 30) // 2
+    left_x, right_x = m, m + col_w + 30
+    top = 302
+    row_h = 92
+
+    def section(x: int, title: str, note: str, rows: list, mode: str):
+        draw.text((x, top), title, font=_font(22, bold=True), fill=GOLD)
+        f_n = _font(17)
+        draw.text((x + col_w - draw.textlength(note, font=f_n), top + 5),
+                  note, font=f_n, fill=(125, 132, 148))
+        y = top + 38
+        for i, r in enumerate(rows, 1):
+            if i % 2 == 1:
+                draw.rounded_rectangle([x - 8, y - 2, x + col_w + 8,
+                                        y + row_h - 10],
+                                       radius=10, fill=(20, 24, 36))
+            f_rank = _font(24 if i < 10 else 21, bold=True)
+            rank = str(i)
+            draw.text((x + 34 - draw.textlength(rank, font=f_rank), y + 24),
+                      rank, font=f_rank, fill=GOLD_DIM)
+
+            pw, ph = 60, 74
+            px, py = x + 44, y + 2
+            portrait = get_hero_portrait(r.get("hero") or "")
+            if portrait:
+                ic = _cover(portrait.convert("RGB"), (pw, ph)).convert("RGBA")
+                mask = Image.new("L", (pw, ph), 0)
+                ImageDraw.Draw(mask).rounded_rectangle(
+                    [0, 0, pw - 1, ph - 1], radius=8, fill=255)
+                ic.putalpha(mask)
+                canvas.alpha_composite(ic, (px, py))
+            else:
+                draw.rounded_rectangle([px, py, px + pw, py + ph], radius=8,
+                                       fill=(26, 31, 45))
+                letter = (r.get("hero") or "?")[:1].upper()
+                f_l = _font(30, bold=True)
+                draw.text((px + pw / 2 - draw.textlength(letter, font=f_l) / 2,
+                           py + ph / 2 - 18), letter, font=f_l, fill=GOLD)
+            draw.rounded_rectangle([px, py, px + pw, py + ph], radius=8,
+                                   outline=(66, 72, 88), width=2)
+
+            tx = px + pw + 16
+            hero = r.get("hero") or ""
+            f_hero = _font(26, bold=True)
+            avail = col_w - (tx - x) - 8
+            while hero and draw.textlength(hero, font=f_hero) > avail:
+                hero = hero[:-1]
+            if hero != (r.get("hero") or ""):
+                hero = hero.rstrip() + "…"
+            draw.text((tx, y + 12), hero, font=f_hero, fill=(232, 235, 242))
+
+            if mode == "win":
+                stat = f"{r['winrate']:.1f}% · {r['pickrate']:.1f}% пиков"
+            else:
+                stat = f"{r['pickrate']:.1f}% пиков · {r['winrate']:.1f}%"
+            color = (232, 200, 120) if r.get("winrate", 0) >= 52.0 \
+                else (150, 158, 174)
+            draw.text((tx, y + 48), stat, font=_font(18), fill=color)
+            y += row_h
+
+    section(left_x, "ТОП ПО ВИНРЕЙТУ", "винрейт · пики",
+            meta.get("by_winrate") or [], "win")
+    section(right_x, "ТОП ПО ПОПУЛЯРНОСТИ", "пики · винрейт",
+            meta.get("by_pick") or [], "pick")
+
+    # подвал
+    draw.line([m, 1282, W - m, 1282], fill=(60, 64, 78), width=2)
+    draw.text((m, 1302), "@Mirsborka_bot", font=_font(30, bold=True), fill=GOLD)
+    f_tag = _font(21)
+    tag = "мета · сборки · разбор матчей"
+    tw = draw.textlength(tag, font=f_tag)
+    draw.text((W - m - tw, 1308), tag, font=f_tag, fill=(150, 158, 174))
+
+    canvas.convert("RGB").save(out_path, "PNG", optimize=True)
+    return out_path
+
+
+def _compact(v) -> str:
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"{v / 1_000:.0f}k"
+    return str(v)
+
+
 def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
-    """Красивый постер 1080×1350: портрет, роли, винрейт, топ-предметы."""
+    """Постер 1080×1350: герой, винрейт, матчапы, сборки и полный билд."""
     en = data.get("en") or (data.get("slug") or "").replace("-", " ").title()
     W, H = POSTER_W, POSTER_H
     m = 72
@@ -938,6 +1188,12 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                           wr, font=f_w, fill=GOLD)
             y2 += 36
 
+    # правая колонка под портретом — полная сборка топ-1 позиции (D2PT)
+    full = data.get("top_build") or {}
+    if portrait and any(full.get(k) for k in
+                        ("starting", "core", "abilities", "talents")):
+        _draw_full_build(img, draw, full, px, py + ph + 22, pw)
+
     # предметы: сборка топ-1 по винрейту (D2PT), иначе — топ предметов недели
     build = data.get("top_build") or {}
     six = [x for x in (build.get("sixslot") or []) if x.get("item")][:6]
@@ -946,7 +1202,7 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
 
     if six:
         iy = max(958, y2 + 22)
-        heading = "СБОРКА"
+        heading = "ФИНАЛ"
         if build.get("label"):
             heading += f" · {build['label']}"
         draw.text((m, iy), heading, font=_font(24, bold=True), fill=GOLD)

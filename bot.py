@@ -41,7 +41,6 @@ import d2pt
 import items_img
 import opendota
 import patch
-import state as store
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -175,9 +174,7 @@ MENU_FIND = "✍️ Поиск героя"
 MENU_META = "📊 Мета патча"
 MENU_COUNTER = "⚔️ Контр-пик"
 MENU_DAILY = "🎲 Герой дня"
-MENU_FAVS = "⭐ Избранное"
 MENU_MATCH = "📈 Разбор матча"
-MENU_PROFILE = "👤 Мой профиль"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -185,8 +182,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=MENU_PICK), KeyboardButton(text=MENU_FIND)],
             [KeyboardButton(text=MENU_META), KeyboardButton(text=MENU_COUNTER)],
-            [KeyboardButton(text=MENU_DAILY), KeyboardButton(text=MENU_FAVS)],
-            [KeyboardButton(text=MENU_PROFILE), KeyboardButton(text=MENU_MATCH)],
+            [KeyboardButton(text=MENU_DAILY), KeyboardButton(text=MENU_MATCH)],
             [KeyboardButton(text=MENU_HOME)],
         ],
         resize_keyboard=True,
@@ -207,7 +203,7 @@ def hero_nav_rows(page: int, total_pages: int):
     return [nav, [InlineKeyboardButton(text="✍️ Поиск героя", callback_data="search")]]
 
 
-def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardMarkup:
+def hero_card_keyboard(slug: str, en: str) -> InlineKeyboardMarkup:
     e = en.replace(" ", "+")
     rows = [
         [
@@ -223,11 +219,6 @@ def hero_card_keyboard(slug: str, en: str, fav: bool = False) -> InlineKeyboardM
         [
             InlineKeyboardButton(text="📖 Гайды", callback_data=f"dbguide:{slug}"),
             InlineKeyboardButton(text="🩹 Патч", callback_data=f"changes:{slug}"),
-        ],
-        [
-            InlineKeyboardButton(
-                text=("🗑 Убрать из избранного" if fav else "⭐ В избранное"),
-                callback_data=f"fav:{slug}|{en}"),
             InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hero:{slug}"),
         ],
         [
@@ -327,10 +318,6 @@ class Counter(StatesGroup):
     waiting = State()
 
 
-class Profile(StatesGroup):
-    waiting = State()
-
-
 def format_meta(meta: dict) -> str:
     lines = ["📊 <b>Мета патча</b>"]
     badge = patch.badge()
@@ -361,6 +348,17 @@ def format_meta(meta: dict) -> str:
     return "\n".join(lines)
 
 
+def meta_caption(meta: dict) -> str:
+    """Короткая подпись под постером меты."""
+    name = meta.get("bracket_name") or "Все ранги"
+    lines = [f"📊 <b>Мета патча · {esc(name)}</b>"]
+    badge = patch.badge()
+    if badge:
+        lines.append(badge)
+    lines.append("<i>выбери ранг кнопками ниже 👇</i>")
+    return "\n".join(lines)
+
+
 def _num(v: int) -> str:
     if v >= 1_000_000:
         return f"{v / 1_000_000:.1f}M"
@@ -384,6 +382,55 @@ def meta_keyboard(current: int) -> InlineKeyboardMarkup:
                 callback_data=f"meta:{k}"))
         rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _meta_poster(meta: dict) -> str | None:
+    """Собирает постер меты во временный файл; None — если не вышло."""
+    p = patch.current()
+    num = (p.get("number") or "").strip()
+    parts = []
+    if num and num != "—":
+        parts.append(f"ПАТЧ {num}")
+    date = patch.date_text(p.get("timestamp") or 0)
+    if date:
+        parts.append(date)
+    out = str(Path(__file__).with_name("_meta.png"))
+    try:
+        await asyncio.to_thread(items_img.build_meta_poster, meta, out,
+                                " · ".join(parts))
+        return out
+    except Exception:  # noqa: BLE001
+        log.exception("meta poster failed")
+        return None
+
+
+async def _push_meta(bot, chat_id: int, meta: dict, bracket: int,
+                     wait=None):
+    """Постер меты с кнопками рангов; текст — только как запасной вариант."""
+    kb = meta_keyboard(bracket)
+    poster = await _meta_poster(meta)
+    if poster:
+        if wait is not None:
+            try:
+                await wait.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await bot.send_photo(chat_id, FSInputFile(poster),
+                                 caption=meta_caption(meta), reply_markup=kb)
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("meta poster send failed")
+        finally:
+            try:
+                Path(poster).unlink()
+            except Exception:  # noqa: BLE001
+                pass
+        await bot.send_message(chat_id, format_meta(meta), reply_markup=kb,
+                               disable_web_page_preview=True)
+        return
+    if wait is not None:
+        await wait.edit_text(format_meta(meta), reply_markup=kb)
 
 
 MATCH_PROMPT = ("📈 Пришли номер матча — только цифры.\n"
@@ -717,11 +764,10 @@ START_TEXT = (
     "<i>Актуальные билды для всех 127 героев</i>\n"
     "{patch}"
     "\n"
-    "🛡 <b>Выбрать героя</b> — портреты и статистика\n"
+    "🛡 <b>Выбрать героя</b> — постер, сборки и винрейт\n"
     "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
     "📊 <b>Мета по MMR</b> · ⚔️ <b>Контр-пик</b> · 🎲 <b>Герой дня</b>\n"
-    "⭐ <b>Избранное</b> · 📈 <b>Разбор матча</b>\n"
-    "👤 <b>Профиль игрока</b> по Steam ID · 🏠 <b>Главное меню</b>\n"
+    "📈 <b>Разбор матча</b> · 🏠 <b>Главное меню</b>\n"
     "\n"
     "<blockquote>📊 Карточка героя с dotabuff · про-билды <b>Pos 1–5</b> ·"
     " иконки предметов · тайминги закупа · таланты</blockquote>\n"
@@ -885,12 +931,6 @@ async def cmd_match(m: Message, state: FSMContext):
     await m.answer(MATCH_PROMPT)
 
 
-@router.message(Command("favs"))
-async def cmd_favs(m: Message, state: FSMContext):
-    await state.clear()
-    await send_favorites(m)
-
-
 @router.message(Command("daily"))
 async def cmd_daily(m: Message, state: FSMContext):
     await state.clear()
@@ -908,25 +948,9 @@ async def cmd_counter(m: Message, state: FSMContext):
     await m.answer(COUNTER_PROMPT)
 
 
-@router.message(Command("me", "profile"))
-async def cmd_me(m: Message, state: FSMContext):
-    await state.clear()
-    tail = (m.text or "").partition(" ")[2].strip()
-    acc = opendota.normalize_account(tail) if tail else None
-    if acc:
-        await send_profile(m.bot, m.chat.id, acc)
-        return
-    saved = store.profile_id(m.chat.id)
-    if saved:
-        await send_profile(m.bot, m.chat.id, int(saved))
-        return
-    await _ask_profile(m, state)
-
-
 # кнопки нижнего меню (регистрируется до поиска, чтобы работали в любом состоянии)
 @router.message(F.text.in_({MENU_HOME, MENU_PICK, MENU_FIND, MENU_META,
-                            MENU_COUNTER, MENU_DAILY, MENU_FAVS, MENU_MATCH,
-                            MENU_PROFILE}))
+                            MENU_COUNTER, MENU_DAILY, MENU_MATCH}))
 async def on_menu_button(m: Message, state: FSMContext):
     await state.clear()
     if m.text == MENU_PICK:
@@ -942,156 +966,22 @@ async def on_menu_button(m: Message, state: FSMContext):
         await m.answer(COUNTER_PROMPT)
     elif m.text == MENU_DAILY:
         await send_daily(m)
-    elif m.text == MENU_FAVS:
-        await send_favorites(m)
     elif m.text == MENU_MATCH:
         await state.set_state(Match.waiting)
         await m.answer(MATCH_PROMPT)
-    elif m.text == MENU_PROFILE:
-        saved = store.profile_id(m.chat.id)
-        if saved:
-            await send_profile(m.bot, m.chat.id, int(saved))
-        else:
-            await _ask_profile(m, state)
     else:
         await send_start(m)
 
 
 async def send_meta(m: Message, bracket: int = 0):
-    wait = await m.answer("⏳ Собираю мету патча...")
+    wait = await m.answer("⏳ Загружаю мету патча...")
     try:
         meta = await asyncio.to_thread(opendota.get_meta, bracket)
     except Exception:  # noqa: BLE001
         log.exception("meta failed")
         await wait.edit_text("😔 Не удалось получить мету, попробуй позже.")
         return
-    await wait.edit_text(format_meta(meta), reply_markup=meta_keyboard(bracket))
-
-
-async def send_favorites(m: Message):
-    favs = store.favorites(m.chat.id)
-    try:
-        heroes = await fetch_heroes()
-    except Exception:  # noqa: BLE001
-        heroes = []
-    by_slug = {h["slug"]: h for h in heroes}
-    chosen = [by_slug[s] for s in favs if s in by_slug]
-
-    if not chosen:
-        await m.answer("⭐ <b>Избранное пусто</b>\n\n"
-                       "Открой любого героя и нажми «⭐ В избранное» — он появится здесь.")
-        return
-
-    rows = [[InlineKeyboardButton(text=h["en"], callback_data=f"hero:{h['slug']}")]
-            for h in chosen]
-    rows.append([InlineKeyboardButton(text="🧹 Очистить избранное", callback_data="favclear")])
-    await m.answer(f"⭐ <b>Избранные герои</b> · {len(chosen)}",
-                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-
-# ---------------------------------------------------------------------------
-# Профиль игрока по Steam ID
-# ---------------------------------------------------------------------------
-PROFILE_PROMPT = (
-    "👤 Пришли Steam ID — 17 цифр (или ID друга из Dota, 9–10 цифр):\n"
-    "например: <code>76561198030654385</code>\n\n"
-    "<i>Профиль должен быть открыт в Dota 2: Настройки → "
-    "«Общедоступные данные матчей».</i>"
-)
-
-
-def format_profile(p: dict) -> str:
-    name = p.get("name") or "Игрок"
-    lines = [f"👤 <b>{esc(name)}</b>"]
-    bits = []
-    if p.get("rank"):
-        bits.append(f"🏅 {esc(p['rank'])}")
-    if p.get("leaderboard"):
-        rank_pos = f"{int(p['leaderboard']):,}".replace(",", " ")
-        bits.append(f"🏆 Топ-{rank_pos}")
-    if p.get("country"):
-        bits.append(f"🌍 {esc(p['country'])}")
-    if bits:
-        lines.append(" · ".join(bits))
-    if p.get("steamid"):
-        lines.append(f"<code>{p['steamid']}</code>")
-
-    win = p.get("win") or 0
-    lose = p.get("lose") or 0
-    total = win + lose
-    if total:
-        lines.append(f"\n📊 Матчей: <b>{_num(total)}</b> · винрейт "
-                     f"<b>{win / total * 100:.1f}%</b> "
-                     f"<i>({_num(win)} / {_num(lose)})</i>")
-    if p.get("hidden"):
-        lines.append("\n🔒 <i>Статистика матчей скрыта в настройках Dota 2 — "
-                     "включи «Общедоступные данные матчей».</i>")
-
-    if p.get("recent"):
-        lines.append("\n📈 <b>Последние матчи</b>")
-        for r in p["recent"][:4]:
-            mark = "✅" if r["won"] else "❌"
-            lines.append(f"{mark} {esc(r['hero'])} · "
-                         f"{r['k']}/{r['d']}/{r['a']} · {r['gpm']} GPM · "
-                         f"{_mmss(r['duration'])}")
-
-    if p.get("pool"):
-        lines.append("\n🧰 <b>Частые герои</b> <i>(последние матчи)</i>")
-        for r in p["pool"][:4]:
-            lines.append(f"  • {esc(r['hero'])} — {r['games']} "
-                         f"{_plural(r['games'], 'игра', 'игры', 'игр')} · "
-                         f"{r['winrate']:.0f}%")
-
-    if p.get("profile_url"):
-        lines.append(f"\n🔗 {p['profile_url']}")
-    return "\n".join(lines)
-
-
-def profile_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh"),
-         InlineKeyboardButton(text="✏️ Сменить ID", callback_data="profile:change")],
-        [InlineKeyboardButton(text="📈 Разбор матча", callback_data="profile:match")],
-    ])
-
-
-async def send_profile(bot: Bot, chat_id: int, account_id: int):
-    wait = await bot.send_message(chat_id, "⏳ Загружаю профиль...")
-    try:
-        p = await asyncio.to_thread(opendota.get_player, account_id)
-    except Exception:  # noqa: BLE001
-        log.exception("profile failed")
-        await wait.edit_text("😔 Не нашёл профиль. Проверь Steam ID и открой "
-                             "статистику матчей в настройках Dota 2.")
-        return
-
-    store.set_profile_id(chat_id, account_id)
-    text = format_profile(p)
-    kb = profile_keyboard()
-    try:
-        await wait.delete()
-    except Exception:  # noqa: BLE001
-        pass
-
-    if p.get("avatar"):
-        try:
-            if len(text) <= 1024:
-                await bot.send_photo(chat_id, p["avatar"], caption=text,
-                                     reply_markup=kb)
-            else:
-                await bot.send_photo(chat_id, p["avatar"])
-                await bot.send_message(chat_id, text, reply_markup=kb,
-                                       disable_web_page_preview=True)
-            return
-        except Exception:  # noqa: BLE001
-            log.debug("avatar send failed", exc_info=True)
-    await bot.send_message(chat_id, text, reply_markup=kb,
-                           disable_web_page_preview=True)
-
-
-async def _ask_profile(m: Message, state: FSMContext):
-    await state.set_state(Profile.waiting)
-    await m.answer(PROFILE_PROMPT)
+    await _push_meta(m.bot, m.chat.id, meta, bracket, wait)
 
 
 # ---------------------------------------------------------------------------
@@ -1354,43 +1244,6 @@ async def on_counter(m: Message, state: FSMContext):
     await run_counter(m, m.text or "")
 
 
-@router.message(F.text, Profile.waiting)
-async def on_profile(m: Message, state: FSMContext):
-    acc = opendota.normalize_account(m.text)
-    if not acc:
-        await m.answer("🤔 Нужен числовой ID: 17 цифр (SteamID64) или "
-                       "9–10 цифр (ID друга из Dota).\n"
-                       "Например: <code>76561198030654385</code>")
-        return
-    await state.clear()
-    await send_profile(m.bot, m.chat.id, acc)
-
-
-@router.callback_query(F.data.startswith("fav:"))
-async def cb_fav(cq: CallbackQuery):
-    payload = cq.data.split(":", 1)[1]
-    slug, _, en = payload.partition("|")
-    en = en or slug.replace("-", " ").title()
-    added = store.toggle_favorite(cq.message.chat.id, slug)
-    await cq.answer("⭐ Добавлено в избранное" if added else "Убрано из избранного")
-    try:
-        await cq.message.edit_reply_markup(
-            reply_markup=hero_card_keyboard(slug, en, fav=added))
-    except Exception:  # noqa: BLE001
-        log.debug("edit_reply_markup failed", exc_info=True)
-
-
-@router.callback_query(F.data == "favclear")
-async def cb_favclear(cq: CallbackQuery):
-    for slug in store.favorites(cq.message.chat.id):
-        store.remove_favorite(cq.message.chat.id, slug)
-    await cq.answer("Избранное очищено")
-    chat_id = cq.message.chat.id
-    await _swap(cq)
-    await cq.bot.send_message(chat_id, "⭐ <b>Избранное пусто</b>\n\n"
-                              "Открой героя и нажми «⭐ В избранное».")
-
-
 @router.callback_query(F.data.startswith("meta:"))
 async def cb_meta(cq: CallbackQuery):
     try:
@@ -1401,14 +1254,14 @@ async def cb_meta(cq: CallbackQuery):
     await cq.answer()
     chat_id = cq.message.chat.id
     await _swap(cq)
-    msg = await cq.bot.send_message(chat_id, "⏳ Считаю мету…")
+    msg = await cq.bot.send_message(chat_id, "⏳ Загружаю мету патча…")
     try:
         meta = await asyncio.to_thread(opendota.get_meta, key)
     except Exception:  # noqa: BLE001
         log.exception("meta bracket failed")
         await msg.edit_text("😔 Нет данных по этому рангу, попробуй другой.")
         return
-    await msg.edit_text(format_meta(meta), reply_markup=meta_keyboard(key))
+    await _push_meta(cq.bot, chat_id, meta, key, msg)
 
 
 @router.callback_query(F.data.startswith("mself:"))
@@ -1484,10 +1337,10 @@ async def show_hero(m_or_cq, h: dict):
                else m_or_cq.message.chat.id)
     bot = m_or_cq.bot
     if isinstance(m_or_cq, Message):
-        wait = await m_or_cq.answer("⏳ Собираю постер...")
+        wait = await m_or_cq.answer("⏳ Загружаю героя...")
     else:
         await m_or_cq.answer()
-        wait = await bot.send_message(chat_id, "⏳ Собираю постер...")
+        wait = await bot.send_message(chat_id, "⏳ Загружаю героя...")
 
     try:
         data = await asyncio.to_thread(dotabuff.get_hero_overview, h["slug"])
@@ -1498,8 +1351,7 @@ async def show_hero(m_or_cq, h: dict):
 
     en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
     changes = await hero_changes(en)
-    fav = store.is_favorite(chat_id, h["slug"])
-    kb = hero_card_keyboard(h["slug"], en, fav)
+    kb = hero_card_keyboard(h["slug"], en)
     poster = await _hero_poster(data, h["slug"])
 
     try:
@@ -1541,10 +1393,10 @@ async def cb_daily(cq: CallbackQuery):
 @router.callback_query(F.data.startswith("poster:"))
 async def cb_poster(cq: CallbackQuery):
     slug = cq.data.split(":", 1)[1]
-    await cq.answer("🖼 Собираю постер…")
+    await cq.answer("🖼 Загружаю героя…")
     chat_id = cq.message.chat.id
     await _swap(cq)
-    msg = await cq.bot.send_message(chat_id, "⏳ Собираю постер...")
+    msg = await cq.bot.send_message(chat_id, "⏳ Загружаю героя...")
     try:
         data = await asyncio.to_thread(dotabuff.get_hero_overview, slug)
     except Exception:  # noqa: BLE001
@@ -1597,35 +1449,12 @@ async def cb_changes(cq: CallbackQuery):
                         disable_web_page_preview=True)
 
 
-@router.callback_query(F.data == "profile:refresh")
-async def cb_profile_refresh(cq: CallbackQuery):
-    await cq.answer()
-    chat_id = cq.message.chat.id
-    acc = store.profile_id(chat_id)
-    await _swap(cq)
-    if not acc:
-        await cq.bot.send_message(chat_id, PROFILE_PROMPT)
-        return
-    await send_profile(cq.bot, chat_id, int(acc))
-
-
-@router.callback_query(F.data == "profile:change")
-async def cb_profile_change(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    chat_id = cq.message.chat.id
-    store.clear_profile_id(chat_id)
-    await _swap(cq)
-    await state.set_state(Profile.waiting)
-    await cq.bot.send_message(chat_id, PROFILE_PROMPT)
-
-
-@router.callback_query(F.data == "profile:match")
-async def cb_profile_match(cq: CallbackQuery, state: FSMContext):
-    await cq.answer()
-    chat_id = cq.message.chat.id
-    await _swap(cq)
-    await state.set_state(Match.waiting)
-    await cq.bot.send_message(chat_id, MATCH_PROMPT)
+@router.callback_query(F.data.startswith("fav:"))
+@router.callback_query(F.data == "favclear")
+@router.callback_query(F.data.startswith("profile:"))
+async def cb_legacy_button(cq: CallbackQuery):
+    """Кнопки из старых сообщений: избранное и профиль больше не нужны."""
+    await cq.answer("Эта кнопка больше не используется — открой героя заново 🙂")
 
 
 @router.callback_query(F.data == "counter")
@@ -1828,8 +1657,6 @@ async def main():
         return
 
     _apply_tg_dns_override()
-    # хранилище избранного (файл кешируется между запусками GitHub Actions)
-    store.init()
     # прогрев кеша списка героев в фоне
     asyncio.create_task(_warm_heroes())
     # актуальный патч Dota 2 (dota2.com/patches)
@@ -1863,7 +1690,6 @@ async def main():
                 BotCommand(command="meta", description="📊 Мета патча по MMR"),
                 BotCommand(command="counter", description="⚔️ Контр-пик по драфту"),
                 BotCommand(command="daily", description="🎲 Герой дня"),
-                BotCommand(command="favs", description="⭐ Избранное"),
                 BotCommand(command="match", description="📈 Разбор матча"),
             ])
         except Exception:  # noqa: BLE001
