@@ -1486,11 +1486,11 @@ async def cb_search(cq: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("page:"))
 async def cb_page(cq: CallbackQuery):
+    """Листание списка героев: не удаляем сообщение, а обновляем его на месте."""
     page = int(cq.data.split(":")[1])
     await cq.answer()
     chat_id = cq.message.chat.id
-    await _swap(cq)
-    await send_hero_list(chat_id, page, cq.bot)
+    await send_hero_list(chat_id, page, cq.bot, cq.message)
 
 
 @router.callback_query(F.data.startswith("hero:"))
