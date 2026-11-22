@@ -1054,6 +1054,22 @@ PLAYER_BUILDS = {
         "author": "@tgkpyatka69",
         "author_url": "https://t.me/tgkpyatka69",
         "guide_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=2992251175",
+        # разделы из гайда Steam: полностью по иконкам, без подписей-баннеров
+        "sections": [
+            ("ДО 10 МИН",
+             ["blades_of_attack", "phase_boots", "mask_of_madness", "orb_of_corrosion"]),
+            ("ПО ПОРЯДКУ",
+             ["diffusal_blade", "gloves", "maelstrom", "berserkers_sabatons",
+              "aghanims_shard"]),
+            ("ПО СИТУАЦИИ",
+             ["ultimate_scepter", "assault", "mjollnir", "monkey_king_bar"]),
+            ("LATE · МЕДВЕДЬ",
+             ["maelstrom", "harpoon", "bloodthorn", "basher", "assault",
+              "nullifier"]),
+            ("СИТУАТИВНЫЕ",
+             ["orb_of_frost", "desolator", "skadi", "silver_edge",
+              "black_king_bar", "butterfly"]),
+        ],
     },
 }
 
@@ -1088,8 +1104,8 @@ async def _hero_poster(data: dict, slug: str) -> str | None:
     poster_data["top_builds"] = []
     poster_data["top_build"] = None
     player = PLAYER_BUILDS.get((slug or "").lower())
-    if player:
-        poster_data["author_note"] = player["guide_url"].replace("https://", "")
+    if player and player.get("sections"):
+        poster_data["player_build"] = player["sections"]
     try:
         builds = await asyncio.wait_for(
             asyncio.to_thread(d2pt.get_builds, data.get("en") or ""),

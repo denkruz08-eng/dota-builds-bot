@@ -903,6 +903,27 @@ def _draw_full_build(canvas, draw, build: dict, x: int, y: int, w: int):
             y += 15
 
 
+def _draw_player_build(canvas, draw, sections: list, x: int, y: int, w: int):
+    """Правая колонка: компактная сборка игрока по разделам, одними иконками."""
+    draw.text((x, y), "СБОРКА ИГРОКА", font=_font(19, bold=True), fill=GOLD)
+    y += 26
+    icon, gap = 34, 5
+    cols = max(1, (w + gap) // (icon + gap))
+    for title, names in sections:
+        draw.text((x, y), title, font=_font(11, bold=True), fill=GOLD_DIM)
+        y += 15
+        for i, name in enumerate(names[:cols]):
+            ix = x + i * (icon + gap)
+            ico = get_item_icon(name)
+            if ico is not None:
+                ico = ico.resize((icon, icon))
+                canvas.paste(ico, (ix, y), ico)
+            draw.rounded_rectangle([ix - 1, y - 1, ix + icon, y + icon],
+                                   radius=5, outline=(70, 76, 92), width=1)
+        y += icon + 8
+    return y
+
+
 def build_meta_poster(meta: dict, out_path: str, subtitle: str = "") -> str:
     """Постер меты: топ-10 по винрейту и популярности с портретами героев."""
     W, H = POSTER_W, POSTER_H
@@ -1188,10 +1209,13 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                           wr, font=f_w, fill=GOLD)
             y2 += 36
 
-    # правая колонка под портретом — полная сборка топ-1 позиции (D2PT)
+    # правая колонка под портретом: сборка игрока (если есть), иначе D2PT
     full = data.get("top_build") or {}
-    if portrait and any(full.get(k) for k in
-                        ("starting", "core", "abilities", "talents")):
+    player_build = data.get("player_build") or []
+    if portrait and player_build:
+        _draw_player_build(img, draw, player_build, px, py + ph + 22, pw)
+    elif portrait and any(full.get(k) for k in
+                          ("starting", "core", "abilities", "talents")):
         _draw_full_build(img, draw, full, px, py + ph + 22, pw)
 
     # предметы: сборка топ-1 по винрейту (D2PT), иначе — топ предметов недели
@@ -1250,15 +1274,6 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                 if wr:
                     draw.text((ix, ty + 2), str(wr), font=_font(18),
                               fill=(140, 148, 164))
-
-    # ссылка на авторскую сборку — обычной строкой, без декоративного блока
-    note = data.get("author_note")
-    if note:
-        f_note = _font(16)
-        text = f"АВТОРСКАЯ СБОРКА · {note}"
-        while text and draw.textlength(text, font=f_note) > W - 2 * m:
-            text = text[:-1]
-        draw.text((m, 1188), text, font=f_note, fill=(160, 168, 184))
 
     # подвал
     draw.line([m, 1218, W - m, 1218], fill=(60, 64, 78), width=2)
