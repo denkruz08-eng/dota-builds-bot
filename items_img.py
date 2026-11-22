@@ -1251,6 +1251,15 @@ def build_hero_poster(data: dict, out_path: str, subtitle: str = "") -> str:
                     draw.text((ix, ty + 2), str(wr), font=_font(18),
                               fill=(140, 148, 164))
 
+    # ссылка на авторскую сборку — обычной строкой, без декоративного блока
+    note = data.get("author_note")
+    if note:
+        f_note = _font(16)
+        text = f"АВТОРСКАЯ СБОРКА · {note}"
+        while text and draw.textlength(text, font=f_note) > W - 2 * m:
+            text = text[:-1]
+        draw.text((m, 1188), text, font=f_note, fill=(160, 168, 184))
+
     # подвал
     draw.line([m, 1218, W - m, 1218], fill=(60, 64, 78), width=2)
     draw.text((m, 1244), "@Mirsborka_bot", font=_font(30, bold=True), fill=GOLD)

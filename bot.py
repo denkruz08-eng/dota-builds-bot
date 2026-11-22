@@ -870,11 +870,36 @@ async def cmd_start(m: Message, state: FSMContext):
 
 
 _banner_path = ""
+_anim_path = ""
+
+
+def _local_file(name: str) -> str:
+    """Путь к файлу рядом с bot.py или пустая строка, если файла нет."""
+    p = Path(__file__).with_name(name)
+    return str(p) if p.exists() else ""
 
 
 async def send_start(m: Message):
-    """Стартовый экран: баннер + приветствие + нижнее меню."""
-    global _banner_path
+    """Стартовый экран: баннер + приветствие + нижнее меню.
+
+    Если рядом лежит start_anim.mp4 — отправляем его как animation:
+    Telegram сам зацикливает такие файлы и крутит без остановки.
+    """
+    global _banner_path, _anim_path
+    if not _anim_path:
+        _anim_path = _local_file("start_anim.mp4") or "-"
+    if _anim_path != "-":
+        try:
+            sent = await m.answer_animation(
+                FSInputFile(_anim_path),
+                caption=start_text(),
+                reply_markup=main_menu_kb(),
+            )
+        except Exception:  # noqa: BLE001 — нет файла/старый клиент, уходим в PNG
+            log.exception("animation banner send failed")
+        else:
+            _start_countdown(m.bot, m.chat.id, sent.message_id, True)
+            return
     if not _banner_path:
         p = Path(__file__).with_name("start_banner.png")
         if p.exists():
@@ -1023,7 +1048,17 @@ def format_changes(hero_en: str, changes: dict) -> str:
     return "\n".join(lines)
 
 
-def hero_caption(en: str, changes: dict | None) -> str:
+# Сборки от конкретных игроков: показываем в подписи под постером.
+PLAYER_BUILDS = {
+    "lone-druid": {
+        "author": "@tgkpyatka69",
+        "author_url": "https://t.me/tgkpyatka69",
+        "guide_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=2992251175",
+    },
+}
+
+
+def hero_caption(en: str, changes: dict | None, slug: str = "") -> str:
     """Короткая подпись под постером: имя, патч, подсказка про кнопки."""
     lines = [f"🛡 <b>{esc(en)}</b>"]
     if changes and changes.get("total"):
@@ -1031,6 +1066,14 @@ def hero_caption(en: str, changes: dict | None) -> str:
         lines.append(f"🩹 в патче {esc(changes['version'])}: {n} "
                      f"{_plural(n, 'изменение', 'изменения', 'изменений')}")
     lines.append("<i>сборки по позициям — кнопками ниже</i>")
+
+    player = (PLAYER_BUILDS.get((slug or "").lower())
+              or PLAYER_BUILDS.get(en.lower().replace(" ", "-")))
+    if player:
+        lines.append("")
+        lines.append(f"⭐ <b>Сборка от игрока</b> · "
+                     f"<a href=\"{player['author_url']}\">{esc(player['author'])}</a>")
+        lines.append(f"<a href=\"{player['guide_url']}\">Гайд со сборкой на Steam →</a>")
     return "\n".join(lines)
 
 
@@ -1044,6 +1087,9 @@ async def _hero_poster(data: dict, slug: str) -> str | None:
     poster_data = dict(data)
     poster_data["top_builds"] = []
     poster_data["top_build"] = None
+    player = PLAYER_BUILDS.get((slug or "").lower())
+    if player:
+        poster_data["author_note"] = player["guide_url"].replace("https://", "")
     try:
         builds = await asyncio.wait_for(
             asyncio.to_thread(d2pt.get_builds, data.get("en") or ""),
@@ -1365,7 +1411,7 @@ async def show_hero(m_or_cq, h: dict):
     if poster:
         try:
             await bot.send_photo(chat_id, FSInputFile(poster),
-                                 caption=hero_caption(en, changes),
+                                 caption=hero_caption(en, changes, h.get("slug", "")),
                                  reply_markup=kb)
             return
         except Exception:  # noqa: BLE001
