@@ -1056,6 +1056,9 @@ PLAYER_BUILDS = {
         "guide_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=2992251175",
         # разделы из гайда Steam: полностью по иконкам, без подписей-баннеров
         "sections": [
+            ("СТАРТ",
+             ["branches", "branches", "branches", "slippers", "slippers",
+              "branches", "quelling_blade"]),
             ("ДО 10 МИН",
              ["blades_of_attack", "phase_boots", "mask_of_madness", "orb_of_corrosion"]),
             ("ПО ПОРЯДКУ",

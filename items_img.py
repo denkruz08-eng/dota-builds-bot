@@ -904,23 +904,32 @@ def _draw_full_build(canvas, draw, build: dict, x: int, y: int, w: int):
 
 
 def _draw_player_build(canvas, draw, sections: list, x: int, y: int, w: int):
-    """Правая колонка: компактная сборка игрока по разделам, одними иконками."""
+    """Правая колонка: компактная сборка игрока по разделам, одними иконками.
+
+    Иконки предметов в Dota имеют пропорции 88×64 — вписываем их в ячейку
+    с сохранением пропорций, а не растягиваем в квадрат.
+    """
     draw.text((x, y), "СБОРКА ИГРОКА", font=_font(19, bold=True), fill=GOLD)
     y += 26
-    icon, gap = 34, 5
-    cols = max(1, (w + gap) // (icon + gap))
+    cell_w, cell_h, gap = 38, 28, 4
+    cols = max(1, (w + gap) // (cell_w + gap))
     for title, names in sections:
         draw.text((x, y), title, font=_font(11, bold=True), fill=GOLD_DIM)
-        y += 15
+        y += 13
         for i, name in enumerate(names[:cols]):
-            ix = x + i * (icon + gap)
+            ix = x + i * (cell_w + gap)
             ico = get_item_icon(name)
             if ico is not None:
-                ico = ico.resize((icon, icon))
-                canvas.paste(ico, (ix, y), ico)
-            draw.rounded_rectangle([ix - 1, y - 1, ix + icon, y + icon],
+                scale = min((cell_w - 2) / ico.width, (cell_h - 2) / ico.height)
+                iw, ih = max(1, int(ico.width * scale)), max(1, int(ico.height * scale))
+                ico = ico.resize((iw, ih), Image.LANCZOS)
+                tile = Image.new("RGBA", (cell_w, cell_h), (0, 0, 0, 0))
+                tile.alpha_composite(
+                    ico, ((cell_w - iw) // 2, (cell_h - ih) // 2))
+                canvas.paste(tile, (ix, y), tile)
+            draw.rounded_rectangle([ix - 1, y - 1, ix + cell_w, y + cell_h],
                                    radius=5, outline=(70, 76, 92), width=1)
-        y += icon + 8
+        y += cell_h + 6
     return y
 
 
