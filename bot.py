@@ -38,6 +38,7 @@ from aiogram.types import (CallbackQuery, FSInputFile, InlineKeyboardButton,
 
 import dotabuff
 import d2pt
+import hero_picker as picker
 import items_img
 import opendota
 import patch
@@ -134,34 +135,18 @@ _HERE = Path(__file__).parent
 with open(_HERE / "heroes_ru.json", encoding="utf-8") as fh:
     _HEROES_RU = json.load(fh)
 
-PAGE_SIZE = 24  # кнопок героев на страницу (4 колонки x 6 рядов)
+PAGE_SIZE = picker.PAGE_SIZE  # 16 героев на страницу (4x4)
 
 
 def find_hero(query: str):
-    """Ищет героя по подстроке (EN, RU, алиасы). Возвращает список вариантов."""
-    q = query.strip().lower().replace("ё", "е")
-    if not q:
-        return []
-    heroes = dotabuff.get_heroes()
-    exact, starts, contains = [], [], []
-    for h in heroes:
-        en = h["en"]
-        aliases = _HEROES_RU.get(en, {}).get("aliases", [])
-        haystacks = [en.lower(), en.lower().replace("-", "")] + \
-                    [a.lower().replace("ё", "е") for a in aliases]
-        if q in haystacks:
-            exact.append(h)
-        elif any(s.startswith(q) for s in haystacks):
-            starts.append(h)
-        elif any(q in s for s in haystacks):
-            contains.append(h)
-    return (exact + starts + contains)[:PAGE_SIZE]
+    """Быстрый поиск: подстрока + сленг для всех 127 героев."""
+    return picker.fuzzy_find(query, limit=24)
 
 
 def hero_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 Список героев", callback_data="page:0")],
-        [InlineKeyboardButton(text="✍️ Поиск героя", callback_data="search")],
+        [InlineKeyboardButton(text="🔍 Быстрый поиск", callback_data="search")],
         [InlineKeyboardButton(text="🎲 Герой дня", callback_data="daily"),
          InlineKeyboardButton(text="⚔️ Контр-пик", callback_data="counter")],
     ])
@@ -170,7 +155,7 @@ def hero_keyboard() -> InlineKeyboardMarkup:
 # постоянное меню снизу (над полем ввода)
 MENU_HOME = "🏠 Главное меню"
 MENU_PICK = "🛡 Выбрать героя"
-MENU_FIND = "✍️ Поиск героя"
+MENU_FIND = "🔍 Быстрый поиск"
 MENU_META = "📊 Мета патча"
 MENU_COUNTER = "⚔️ Контр-пик"
 MENU_DAILY = "🎲 Герой дня"
@@ -191,16 +176,10 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def hero_nav_rows(page: int, total_pages: int):
-    """Ряд навигации + ряд поиска для клавиатуры списка героев."""
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"page:{page-1}"))
-    nav.append(InlineKeyboardButton(text=f"{page+1} / {total_pages}",
-                                    callback_data="noop"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"page:{page+1}"))
-    return [nav, [InlineKeyboardButton(text="✍️ Поиск героя", callback_data="search")]]
+def hero_nav_rows(page: int, total_pages: int, filter_key: str = "all"):
+    """Навигация компактной сетки (для старых вызовов)."""
+    kb = picker.hero_grid_keyboard([], filter_key, page, total_pages)
+    return kb.inline_keyboard[:1] + kb.inline_keyboard[-1:]
 
 
 def hero_card_keyboard(slug: str, en: str) -> InlineKeyboardMarkup:
@@ -709,36 +688,44 @@ def back_to_hero_kb(slug: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⬅️ Назад к герою", callback_data=f"hero:{slug}")]])
 
 
-async def send_hero_list(chat_id, page: int, bot: Bot, message: Message | None = None):
-    """Одно сообщение: сетка портретов + подпись + кнопки с именами героев."""
-    heroes = await fetch_heroes()
-    total = len(heroes)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    chunk = heroes[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+recent_store = picker.RecentStore()  # in-memory: сбрасывается при рестарте job
 
-    # по 3 имени в ряд — так они не обрезаются на телефоне
-    rows = []
-    for i in range(0, len(chunk), 3):
-        rows.append([
-            InlineKeyboardButton(text=h["en"], callback_data=f"hero:{h['slug']}")
-            for h in chunk[i:i + 3]
-        ])
-    rows.extend(hero_nav_rows(page, total_pages))
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    caption = (f"🛡 <b>Выбери героя</b> · страница {page+1}/{total_pages}\n"
-               f"<i>{total} героев · нажми на имя — карточка и про-билды</i>")
+def _user_key(m_or_cq, chat_id) -> int | str:
+    """Ключ пользователя для недавних героев."""
+    uid = getattr(m_or_cq, "from_user", None)
+    if uid is None:
+        uid = getattr(getattr(m_or_cq, "message", None), "from_user", None)
+    return getattr(uid, "id", None) or chat_id
+
+
+def _picker_caption(filter_key: str, page: int, total_pages: int,
+                    total: int) -> str:
+    title = picker.filter_title(filter_key)
+    hint = ("напиши имя в чат: цмка, ам, сф, тракса — быстрый поиск"
+            if filter_key == "all" else
+            "нажми на имя — карточка и про-билды")
+    return (f"🛡 <b>Выбери героя</b> · {esc(title)}\n"
+            f"<i>{total} героев · {page+1}/{total_pages} · {hint}</i>")
+
+
+async def send_picker(chat_id, bot: Bot, message: Message | None = None,
+                      user_key=None, filter_key: str = "all", page: int = 0):
+    """Компактная сетка 4x4 + кнопки. Листание редактирует то же сообщение."""
+    chunk, total_pages, total, page = picker.filter_heroes(
+        filter_key, page, recent_store=recent_store, user_key=user_key)
+    kb = picker.hero_grid_keyboard(chunk, filter_key, page, total_pages)
+    caption = _picker_caption(filter_key, page, total_pages, total)
 
     grid = None
     try:
-        grid_path = str(Path(__file__).with_name(f"_heroes_grid_{page}.png"))
-        grid = await asyncio.to_thread(items_img.build_heroes_grid, chunk, grid_path)
+        grid_path = str(Path(__file__).with_name("_heroes_grid_current.png"))
+        grid = await asyncio.to_thread(items_img.build_heroes_grid,
+                                       chunk, grid_path, 4)
     except Exception:  # noqa: BLE001
         log.exception("heroes grid failed")
 
     if grid:
-        # при листании просто обновляем то же сообщение, не плодим новые
         if message is not None:
             try:
                 await bot.edit_message_media(
@@ -753,7 +740,35 @@ async def send_hero_list(chat_id, page: int, bot: Bot, message: Message | None =
         await bot.send_photo(chat_id, FSInputFile(grid), caption=caption, reply_markup=kb)
         return
 
+    if message is not None:
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message.message_id,
+                                        text=caption, reply_markup=kb)
+            return
+        except Exception:  # noqa: BLE001
+            log.debug("edit_message_text failed, отправляю новое", exc_info=True)
     await bot.send_message(chat_id, caption, reply_markup=kb)
+
+
+async def send_filters(chat_id, bot: Bot, message: Message | None = None):
+    """Экран вкладок: атрибуты, роли, недавние."""
+    text = ("🎛 <b>Выбери фильтр</b>\n"
+            "<i>Или просто напиши имя героя в чат — цмка, ам, сф, тракса…</i>")
+    kb = picker.filters_keyboard()
+    if message is not None:
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message.message_id,
+                                        text=text, reply_markup=kb)
+            return
+        except Exception:  # noqa: BLE001
+            log.debug("edit filters failed, отправляю новое", exc_info=True)
+    await bot.send_message(chat_id, text, reply_markup=kb)
+
+
+async def send_hero_list(chat_id, page: int, bot: Bot,
+                         message: Message | None = None):
+    """Совместимость со старыми хендлерами: полный список, новая сетка."""
+    await send_picker(chat_id, bot, message, filter_key="all", page=page)
 
 
 # ----------------------------------------------------------------------------
@@ -765,7 +780,7 @@ START_TEXT = (
     "{patch}"
     "\n"
     "🛡 <b>Выбрать героя</b> — постер, сборки и винрейт\n"
-    "🔎 <b>Поиск</b> — напиши имя: <code>tinker</code>, <code>пудж</code>\n"
+    "🔍 <b>Быстрый поиск</b> — напиши имя или сленг: <code>цмка</code>, <code>ам</code>, <code>тракса</code>\n"
     "📊 <b>Мета по MMR</b> · ⚔️ <b>Контр-пик</b> · 🎲 <b>Герой дня</b>\n"
     "📈 <b>Разбор матча</b> · 🏠 <b>Главное меню</b>\n"
     "\n"
@@ -928,14 +943,14 @@ async def send_start(m: Message):
 @router.message(Command("heroes"))
 async def cmd_heroes(m: Message, state: FSMContext):
     await state.clear()
-    await send_hero_list(m.chat.id, 0, m.bot)
+    await send_filters(m.chat.id, m.bot)
 
 
 @router.message(Command("search"))
 async def cmd_search(m: Message, state: FSMContext):
     await state.set_state(Search.waiting)
-    await m.answer("✍️ Напиши имя героя (по-русски или по-английски):\n"
-                   "например: <i>пудж</i>, <i>па</i>, <i>invoker</i>")
+    await m.answer("🔍 Напиши имя героя или сленг:\n"
+                   "например: <i>цмка</i>, <i>ам</i>, <i>сф</i>, <i>тракса</i>, <i>инв</i>")
 
 
 @router.message(Command("meta"))
@@ -979,11 +994,11 @@ async def cmd_counter(m: Message, state: FSMContext):
 async def on_menu_button(m: Message, state: FSMContext):
     await state.clear()
     if m.text == MENU_PICK:
-        await send_hero_list(m.chat.id, 0, m.bot)
+        await send_filters(m.chat.id, m.bot)
     elif m.text == MENU_FIND:
         await state.set_state(Search.waiting)
-        await m.answer("✍️ Напиши имя героя (по-русски или по-английски):\n"
-                       "например: <i>пудж</i>, <i>па</i>, <i>tinker</i>")
+        await m.answer("🔍 Напиши имя героя или сленг:\n"
+                       "например: <i>цмка</i>, <i>ам</i>, <i>сф</i>, <i>тракса</i>")
     elif m.text == MENU_META:
         await send_meta(m)
     elif m.text == MENU_COUNTER:
@@ -1285,12 +1300,8 @@ async def on_search(m: Message, state: FSMContext):
     if len(matches) == 1:
         await show_hero(m, matches[0])
         return
-    rows = []
-    for h in matches:
-        rows.append([InlineKeyboardButton(text=h["en"],
-                                          callback_data=f"hero:{h['slug']}")])
-    await m.answer("🔎 Несколько совпадений — выбери:",
-                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await m.answer(f"🔎 Нашёл {len(matches)} похожих — выбери:",
+                   reply_markup=picker.results_keyboard(matches))
 
 
 @router.message(F.text, Match.waiting)
@@ -1390,10 +1401,8 @@ async def fallback_text(m: Message):
     if len(matches) == 1:
         await show_hero(m, matches[0])
         return
-    rows = [[InlineKeyboardButton(text=h["en"], callback_data=f"hero:{h['slug']}")]
-            for h in matches]
-    await m.answer("🔎 Похоже на несколько героев — выбери:",
-                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await m.answer(f"🔎 Похоже на {len(matches)} героев — выбери:",
+                   reply_markup=picker.results_keyboard(matches))
 
 
 async def show_hero(m_or_cq, h: dict):
@@ -1415,6 +1424,7 @@ async def show_hero(m_or_cq, h: dict):
         return
 
     en = data.get("en") or h.get("en") or h["slug"].replace("-", " ").title()
+    recent_store.add(_user_key(m_or_cq, chat_id), h["slug"])
     changes = await hero_changes(en)
     kb = hero_card_keyboard(h["slug"], en)
     poster = await _hero_poster(data, h["slug"])
@@ -1544,9 +1554,52 @@ async def cb_search(cq: CallbackQuery, state: FSMContext):
     await state.set_state(Search.waiting)
     await cq.bot.send_message(
         chat_id,
-        "✍️ Напиши имя героя (по-русски или по-английски):\n"
-        "например: <i>пудж</i>, <i>па</i>, <i>invoker</i>",
+        "🔍 Напиши имя героя или сленг:\n"
+        "например: <i>цмка</i>, <i>ам</i>, <i>сф</i>, <i>тракса</i>",
     )
+
+
+@router.callback_query(F.data == "filters")
+async def cb_filters(cq: CallbackQuery):
+    """Возврат к вкладкам фильтров."""
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    await send_filters(chat_id, cq.bot, cq.message)
+
+
+@router.callback_query(F.data.startswith("f:"))
+async def cb_filter(cq: CallbackQuery, state: FSMContext):
+    """Вкладка атрибута/роли/недавних или быстрый поиск."""
+    key = cq.data.split(":", 1)[1]
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    if key == "search":
+        await state.set_state(Search.waiting)
+        try:
+            await cq.bot.edit_message_text(
+                chat_id=chat_id, message_id=cq.message.message_id,
+                text="🔍 Напиши имя героя или сленг:\n"
+                     "например: <i>цмка</i>, <i>ам</i>, <i>сф</i>, <i>тракса</i>")
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    await send_picker(chat_id, cq.bot, cq.message,
+                      user_key=_user_key(cq, chat_id), filter_key=key, page=0)
+
+
+@router.callback_query(F.data.startswith("p:"))
+async def cb_pager(cq: CallbackQuery):
+    """Листание компактной сетки внутри выбранного фильтра."""
+    _, filter_key, page_raw = cq.data.split(":", 2)
+    try:
+        page = int(page_raw)
+    except ValueError:
+        page = 0
+    await cq.answer()
+    chat_id = cq.message.chat.id
+    await send_picker(chat_id, cq.bot, cq.message,
+                      user_key=_user_key(cq, chat_id),
+                      filter_key=filter_key, page=page)
 
 
 @router.callback_query(F.data.startswith("page:"))
@@ -1555,7 +1608,8 @@ async def cb_page(cq: CallbackQuery):
     page = int(cq.data.split(":")[1])
     await cq.answer()
     chat_id = cq.message.chat.id
-    await send_hero_list(chat_id, page, cq.bot, cq.message)
+    await send_picker(chat_id, cq.bot, cq.message,
+                      user_key=_user_key(cq, chat_id), filter_key="all", page=page)
 
 
 @router.callback_query(F.data.startswith("hero:"))
